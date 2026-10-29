@@ -621,7 +621,11 @@ def test_every_op_is_a_primitive_or_composes_them():
     primitive inherits its proof and never re-declares it."""
     import importlib, pkgutil, cottax
     for info in pkgutil.walk_packages(cottax.__path__, 'cottax.'):
-        importlib.import_module(info.name)
+        try:
+            importlib.import_module(info.name)
+        except ImportError as e:            # an extra not installed: `ode`'s integrator defines no op
+            if e.name != 'diffrax':
+                raise
     ours = lambda cls: {c for c in cls.__subclasses__() if c.__module__.startswith('cottax.')}
     assert ours(GraphOp) == {Primitive, ComposedOp, StagedOp}
     assert ours(Primitive) == set(PRIMITIVES)
