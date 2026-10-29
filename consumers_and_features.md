@@ -32,18 +32,18 @@ Three rules place everything.
    `interface.py`, and names no feature anywhere; what its `__init__` exports is for a
    study, and its refusal kinds are in `refusals.py`. A consumer uses another through
    `interface`, `interface_types` and `refusals`; another's `__init__` is a study's. A
-   consumer in `USES_NONE` (declaration) imports no other. A feature's
+   consumer in `USES_NONE` (surface) imports no other. A feature's
    `consumers/__init__` imports its answers, so they register; the assembly imports it.
 2. **An answer lives with the feature it is about.** How relational is drawn is
    `relational/consumers/visualization.py`. It has the name of the consumer it answers, and
    is one module: a file, or a package whose `__init__` exports what the file would. Support
    several answers share imports no consumer.
 3. **Nothing imports the assembly.** A study does: `import cottax.assemblies.jax as cx`.
-   It defines only the joined surface, `Scope`, the joins between consumers for the
-   shipped pair (`drive`, `run`, `mdf` / `idf` / `sand` / `mda`) and the
-   conveniences over exact names (`node`, `minted_node`, `cut`, `close`, `close_together`,
-   `assign`, `implement`); the rest is imports and defaults. A surface declares and offers
-   no op: it exists only because a place written as a string needs a root.
+   It defines only the shipped surface (`ShippedSurface`, every shipped part at the shipped
+   defaults), `Scope`, the drawings taking a `Declared`, and `Diffrax` imported when asked
+   for (`ASSEMBLY_DEFINES` in `tests/test_layering.py`); the rest is imports and values
+   (`flat`, `absolute`, `CONTRACTS`, each shipped purpose). A surface writes the model: each
+   of its methods declares, is a condition node or a run, or returns an op.
 
 Why the answer sits with the feature and not with the consumer: when a consumer changes
 what it asks, every stale answer is refused when its class is created, so the machine finds
@@ -64,11 +64,13 @@ Each consumer needs more, and says so in two files:
 |---|---|---|
 | `execution` | `DataStructure`, of a place | `DriverImplementation`, per contract in `ImplementDrivers` |
 | `json` | `Spelling`, of a node; `PlaceCodec`, of a place; `LabelCodec`, of a node name | |
-| `visualization` | `NodeDrawing`, of a condition node; `PlaceDrawing`, of a place | `Formatter`, a drawing's `formatter=` |
-| `declaration` | `DerivedNames`, of a place | `Names` and a vocabulary (a level under `Surface`), in the surface built in the assembly or by `Scope` |
+| `visualization` | `NodeDrawing`, of a condition node; `PlaceDrawing`, of a place; `MintDrawing`, of a purpose | `Formatter`, a drawing's `formatter=` |
+| `surface` | `DerivedNames`, of a place; `Written`, of anything a study writes where a name is due | `Locator`, a surface's `locator`; `Part`, a level a surface class joins |
+| `declaration` | | `Declaring`, a part (`RelationalDeclaring`, `OdeDeclaring` extend it) |
 | `architectures` | `ModelReading`, of a condition node | `Closing`, an architecture's second argument |
 
-What a vocabulary's kinds extend, `Declaration` and its `Wrapper`, is in `interface_types.py`.
+What a declaring part's kinds extend, `Declaration`, its `Wrapper` and `Paired`, is in
+declaration's `interface_types.py`.
 
 An `interface.py` holds what a consumer asks about a node or a place. A consumer's own
 options (a drawing's `Style`, JSON's `implementations=`) say nothing of either: they are
@@ -89,10 +91,10 @@ class has no answer.
   method abstract. With none, the consumer decides: a default (the drawing's grey problem,
   a place's `str`) or a refusal naming the class. `answered()` is the table of what is
   answered. `answer_for_class(interface, cls)` is the same with the class in hand (a
-  surface finds `DerivedNames` by the place class its `Names` writes). Importing a feature's
+  surface finds `DerivedNames` by the place class its `Locator` locates). Importing a feature's
   `consumers` registers its answers (the assembly does).
 - **A `Choice`: several fit.** Which solver answers a problem, how a name is written, which
-  vocabulary a study declares in: none is registered (`@answers` refuses one), and the study
+  parts a surface joins: none is registered (`@answers` refuses one), and the study
   names one in the slot its interface class states in a `Handed in as:` block, an example of
   the call. Each final on offer is marked
   `@choice(interface)` where it is defined: the mark registers nothing, so a choice is found
@@ -109,9 +111,9 @@ and a condition node beside it) from relational's declarations into declaration'
 the architectures out of relational into a consumer of their own: what they ask of a
 problem is three questions (`ModelReading`): whether it is an implicit model and what its
 body is are each language's own picture (an ODE's body is its whole cycle, since a closed cut
-there changes its answer), and only what concerns several problems is the architecture's. No
-assembly holds it: a study joins `Basic`, `Relational` and `Ode` itself and drives from both
-features' `CONTRACTS`.
+there changes its answer), and only what concerns several problems is the architecture's. The
+shipped assembly holds both languages: `ShippedSurface` joins both declaring parts and drives
+from both features' `CONTRACTS`.
 
 **A place**: the same, for the "of a place" half.
 
