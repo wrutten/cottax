@@ -8,9 +8,12 @@ SAND and IDF are cottax's presets under the Jacobi rule, MDF under its default, 
 Every other plan is written out against Martins & Lambe's equations and figure. MDOIS is no
 plan: it needs no shared design variable, and Sellar shares `z`.
 
-What the plans stand in for, until cottax ships it: a mint per subproblem for its own copies, a
-plain jax body for each inserted function, and forward differences at a system subproblem over
-nested constrained subproblems.
+What the plans stand in for, until cottax ships it:
+
+- WORKAROUND(FR-5): a mint per subproblem for its own copies.
+- WORKAROUND(FR-10): a plain jax body for each inserted function.
+- WORKAROUND(FR-6): forward differences at a system subproblem over nested constrained
+  subproblems.
 '''
 
 import dataclasses
@@ -428,6 +431,7 @@ class Run:
         return xdsm(model, self.names, **self.solvers)
 
 
+# WORKAROUND(FR-12): the outer loops as data, run outside the graph.
 WEIGHTS = tuple({weight: w} for w in (1.0, 10.0, 100.0, 1000.0, 10000.0))
 '''Martins & Lambe's weight update (Algorithms 7, 8): the weight raised tenfold per stage.'''
 

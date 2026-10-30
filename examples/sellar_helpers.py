@@ -67,6 +67,7 @@ BOUNDS = {'z1': (-10.0, 10.0), 'z2': (0.0, 10.0), 'x1': (0.0, 10.0)}
 '''Each design variable's `(lo, hi)`.'''
 
 
+# WORKAROUND(FR-8): a constraint over a place nothing wraps, written by hand with its values.
 def bound(name: str, lo: float, hi: float) -> tuple[cx.RelationalCondition, dict]:
     '''`lo <= x <= hi` as a requirement of its own, so it goes wherever `x` does, and the
     values it reads: a side of zero is no place, any other a place minted at `^lower` or
@@ -111,6 +112,8 @@ START = {'z1': 5.0, 'z2': 2.0, 'x1': 1.0, 'y1': 1.0, 'y2': 1.0}
 # derives. A derived name is a `Mint`, a purpose by its class, worn by the name it is derived
 # from. cottax ships `Copy`, one copy per variable; a subproblem's own copy of a shared
 # variable needs one per subproblem, so each subproblem has a copy mint here.
+#
+# WORKAROUND(FR-5): `Copy1` and `Copy2`, written by hand for Sellar's two subproblems.
 
 class Copy1(Mint):
     '''Subproblem 1's own copy of a shared variable.'''
@@ -251,6 +254,8 @@ def formatter(names: dict[str, str] | None = None) -> LatexFormatter:
 # One body per function block of Martins & Lambe's figures ("Discipline i and Penalty
 # Functions", "System and Penalty Functions"), so a block is one node with several outputs, not
 # a chain of arithmetic. A node calls its body with one argument per read, in order.
+#
+# WORKAROUND(FR-10): plain bodies, where a preset would insert formulas.
 
 def squared_distance(*pairs):
     '''`Σ (a − b)²` over `a1, b1, a2, b2, …`: CO's inconsistency `J_i`.'''
@@ -276,6 +281,7 @@ def l1_penalty_with_barrier(w, mu, term, *quads):
     `a, b, plus, minus, …` (EPD). SLSQP is no interior-point method and may clip an elastic
     variable onto its bound at zero, so the logarithm is taken of at least `1e-300`.'''
     a, b, plus, minus = (quads[k::4] for k in range(4))
+    # WORKAROUND(FR-11): the clip, for an active-set method on a barrier.
     log = lambda v: jnp.log(jnp.maximum(v, 1e-300))
     phi = (w * sum(p + m for p, m in zip(plus, minus))
            - mu * sum(log(p) + log(m) for p, m in zip(plus, minus)))
@@ -311,6 +317,8 @@ def function_node(body, reads, owns):
 # their post-optimal derivatives, which no shipped driver gives yet. Until one does, its SLSQP
 # takes this forward-difference Jacobian. SLSQP asks it under `jit`, so it is written in
 # `jax.numpy`; the nested solves run on the host through their callbacks.
+#
+# WORKAROUND(FR-6): this class, until cottax ships it in `jax_solvers`.
 
 @dataclasses.dataclass(frozen=True)
 class FiniteDifferences:
@@ -337,6 +345,10 @@ class FiniteDifferences:
 # solve cannot yet start from its previous answer. A nested subproblem that does not converge
 # either stops the run (`strict`) or returns what it has: a failure cannot yet reach the system
 # subproblem as a failed evaluation.
+#
+# WORKAROUND(FR-12): `run_staged`'s loop over the stages, outside the graph.
+# WORKAROUND(FR-1): its warm start, each run from the last one's answer.
+# WORKAROUND(FR-3): `strict`, the choice between the two; every plan stops the run.
 
 def with_solvers(model: cx.Declared, differences: bool = False, strict: bool = True,
                  system_strict: bool = True, system_tol: float = 1e-7) -> cx.Declared:
