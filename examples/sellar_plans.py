@@ -8,6 +8,26 @@ SAND and IDF are cottax's presets under the Jacobi rule, MDF under its default, 
 Every other plan is written out against Martins & Lambe's equations and figure. MDOIS is no
 plan: it needs no shared design variable, and Sellar shares `z`.
 
+A distributed plan is a recipe of graph operations, applied one at a time and none composed of
+others: `Cut`, `Undetermine`, `Determine`, `Rename`, `Delete`, `Insert` of one node, `Combine`,
+`Nest`. It has three steps:
+
+1. Remove: the declared graph made acyclic. Every cut first, while the declared optimiser still
+   determines the design variables (a cut needs its variable produced); then the optimiser
+   undetermined; then what the architecture replaces renamed or deleted.
+2. Assemble: each new node inserted, a condition node determining nothing; then each
+   requirement combined into the condition node that will own its variables.
+3. Add: each problem determined, innermost first, then the problems directly inside it nested
+   in it. Problems at one depth go in binding order.
+
+Nodes are bound, and requirements combined, in the order of Martins & Lambe's diagrams: the
+system level first, then discipline i = 1, ..., N, its subproblem before its functions. ATC's
+top is made in step 3, after the problems it holds are determined: a cut refuses a copy that
+already exists, so the top is inserted after its cuts, and the `z` and `ŷ` they move have a
+producer only once the system subproblem is determined. The graph paper's Cut, which adds the
+closing condition node, is a `Cut` followed by an `Insert` of the closure. The monolithic plans
+(the SAND, IDF and MDF presets, and AAO) are outside these steps.
+
 What the plans stand in for, until cottax ships it:
 
 - WORKAROUND(FR-5): a mint per subproblem for its own copies.
@@ -34,6 +54,25 @@ from sellar_helpers import (
     penalty_and_objective, place, qsd_margins, run_staged, squared_distance, weight, x1,
     x1_hat, xdsm, y1, y1_hat, y2, y2_hat, z1, z1_copy1, z1_copy2, z2, z2_copy1, z2_copy2,
 )
+
+
+# ---------------------------------------------------------------- one operation at a time
+
+def insert(name, node):
+    '''`node` inserted at `name`: an `Insert` of one binding.'''
+    return Insert(OrderedMap(((name, node),)))
+
+
+def condition(relations=(), objectives=(), parameters=()):
+    '''A condition node determining nothing, as a distributed plan inserts one (not a graph
+    operation).'''
+    return cx.RelationalCondition(relations=tuple(relations), objectives=tuple(objectives),
+                                  unknowns=(), parameters=tuple(parameters))
+
+
+def combine(into, *requirements):
+    '''`requirements` combined into the condition node at `into`, which keeps its binding.'''
+    return Combine(into, (into, *requirements), cx.RelationalCondition)
 
 
 # ---------------------------------------------------------------- the monolithic architectures
@@ -87,40 +126,30 @@ def co(base, version: int = 2):
         tuple(cx.Relation(a, b, cx.Eq) for a, b in consistency))
     held = flat.node('consistency')
     return (base
-            # the system subproblem's targets, read in place of the couplings, and its copy
-            # of x1
+            # 1. the system subproblem's targets read in place of the couplings, its copy of
+            #    x1, each subproblem's own copy of z; the declared optimiser determines nothing
             + Cut(y2, (D1_NODE, F2_NODE), cx.Copy())
             + Cut(y1, (D2_NODE, F1_NODE), cx.Copy())
             + Cut(x1, (F1_NODE,), cx.Copy())
-            # each subproblem's own copy of z
             + Cut(z1, (D1_NODE,), Copy1()) + Cut(z2, (D1_NODE,), Copy1())
             + Cut(z1, (D2_NODE,), Copy2()) + Cut(z2, (D2_NODE,), Copy2())
-            # the declared optimiser owns the system subproblem's variables
             + Undetermine(SYSTEM)
+            # 2. what the system subproblem holds of the subproblems, each subproblem and its
+            #    inconsistency; each requirement into the problem owning its variables
+            + insert(held, condition(system_holds))
+            + insert(SUBPROBLEM_1, condition(objectives=(cx.Objective(J1, cx.Min),)))
+            + insert(flat.node('inconsistency_1'), function_node(
+                squared_distance, (z1_copy1, z1, z2_copy1, z2, x1_hat, x1, y1_hat, y1), (J1,)))
+            + insert(SUBPROBLEM_2, condition(objectives=(cx.Objective(J2, cx.Min),)))
+            + insert(flat.node('inconsistency_2'), function_node(
+                squared_distance, (z1_copy2, z1, z2_copy2, z2, y2_hat, y2), (J2,)))
+            + combine(SYSTEM, held, BOUND_NODES['z1'], BOUND_NODES['z2'])
+            + combine(SUBPROBLEM_1, G1_NODE, BOUND_NODES['x1'])
+            + combine(SUBPROBLEM_2, G2_NODE)
+            # 3. the subproblems, then the system subproblem solving them in every evaluation
+            + Determine(SUBPROBLEM_1, (z1_copy1, z2_copy1, x1))
+            + Determine(SUBPROBLEM_2, (z1_copy2, z2_copy2))
             + Determine(SYSTEM, (z1, z2, x1_hat, y1_hat, y2_hat))
-            # each discipline's functions, the subproblems, what the system subproblem holds
-            # of them
-            + Insert(OrderedMap((
-                (flat.node('inconsistency_1'), function_node(
-                    squared_distance,
-                    (z1_copy1, z1, z2_copy1, z2, x1_hat, x1, y1_hat, y1), (J1,))),
-                (flat.node('inconsistency_2'), function_node(
-                    squared_distance, (z1_copy2, z1, z2_copy2, z2, y2_hat, y2), (J2,))),
-                (SUBPROBLEM_1, cx.RelationalCondition(
-                    relations=(), parameters=(), objectives=(cx.Objective(J1, cx.Min),),
-                    unknowns=(z1_copy1, z2_copy1, x1))),
-                (SUBPROBLEM_2, cx.RelationalCondition(
-                    relations=(), parameters=(), objectives=(cx.Objective(J2, cx.Min),),
-                    unknowns=(z1_copy2, z2_copy2))),
-                (held, cx.RelationalCondition(relations=system_holds, objectives=(),
-                                              unknowns=(), parameters=())))))
-            # each requirement held by the problem owning its variables
-            + Combine(SUBPROBLEM_1, (SUBPROBLEM_1, G1_NODE, BOUND_NODES['x1']),
-                      cx.RelationalCondition)
-            + Combine(SUBPROBLEM_2, (SUBPROBLEM_2, G2_NODE), cx.RelationalCondition)
-            + Combine(SYSTEM, (SYSTEM, held, BOUND_NODES['z1'], BOUND_NODES['z2']),
-                      cx.RelationalCondition)
-            # nested: each subproblem solved in every evaluation of the system subproblem
             + Nest(SUBPROBLEM_1, SYSTEM) + Nest(SUBPROBLEM_2, SYSTEM))
 
 
@@ -136,14 +165,14 @@ def co(base, version: int = 2):
 
 def _penalty_decomposition(base, exact: bool):
     terms = {'D1': (f1, (z1_copy1, z2_copy1, x1)), 'D2': (f2, (z1_copy2, z2_copy2))}
-    nodes, subproblems = [], []
+    subproblems, penalties, determines = [], [], []
     for d, (term, own) in terms.items():
         i = d[-1]
         sub = SUBPROBLEM_1 if i == '1' else SUBPROBLEM_2
         phi, objective = Penalty()(place(d)), SubproblemObjective()(place(f'subproblem_{i}'))
         pairs = CONSISTENCY[d]
         if not exact:
-            nodes.append((flat.node(f'penalty_{i}'), function_node(
+            penalties.append(insert(flat.node(f'penalty_{i}'), function_node(
                 penalty_and_objective, (weight, term, *(p for pair in pairs for p in pair)),
                 (phi, objective))))
             extra, holds = (), ()
@@ -151,7 +180,7 @@ def _penalty_decomposition(base, exact: bool):
             parts = [(ElasticPlus()(place(f'{d}_{k}')), ElasticMinus()(place(f'{d}_{k}')))
                      for k in range(len(pairs))]
             gaps  = tuple(ElasticResidual()(place(f'{d}_{k}')) for k in range(len(pairs)))
-            nodes.append((flat.node(f'penalty_{i}'), function_node(
+            penalties.append(insert(flat.node(f'penalty_{i}'), function_node(
                 l1_penalty_with_barrier,
                 (weight, barrier, term,
                  *(v for (a, b), (p, m) in zip(pairs, parts) for v in (a, b, p, m))),
@@ -159,37 +188,31 @@ def _penalty_decomposition(base, exact: bool):
             extra = tuple(v for pm in parts for v in pm)
             holds = (*(cx.Relation(g, None, cx.Eq) for g in gaps),
                      *(cx.Relation(None, v, cx.Le) for v in extra))
-        subproblems.append((sub, cx.RelationalCondition(
-            relations=holds, parameters=(), objectives=(cx.Objective(objective, cx.Min),),
-            unknowns=(*own, *extra))))
+        subproblems.append(insert(sub, condition(holds, (cx.Objective(objective, cx.Min),))))
+        determines.append(Determine(sub, (*own, *extra)))
     system_objective = SubproblemObjective()(place('opt'))
     return (base
-            # the system subproblem's targets, and each subproblem's own copy of z
+            # 1. the system subproblem's targets read in place of the couplings, each
+            #    subproblem's own copy of z; the declared optimiser determines nothing and
+            #    minimises Σ Φ*_i, so the declared sum of the objective terms goes
             + Cut(y2, (D1_NODE,), cx.Copy())
             + Cut(y1, (D2_NODE,), cx.Copy())
             + Cut(z1, (D1_NODE,), Copy1()) + Cut(z2, (D1_NODE,), Copy1())
             + Cut(z1, (D2_NODE,), Copy2()) + Cut(z2, (D2_NODE, F2_NODE), Copy2())
-            # the declared optimiser owns the system subproblem's variables and minimises
-            # Σ Φ*_i; the declared sum of the objective terms is read by nobody now
             + Undetermine(SYSTEM)
-            + Determine(SYSTEM, (z1, z2, y1_hat, y2_hat))
             + Rename(SYSTEM, ((f, system_objective),))
             + Delete((F_NODE,))
-            # each discipline's penalty functions, the system subproblem's sum, the
-            # subproblems
-            + Insert(OrderedMap((
-                *nodes,
-                (flat.node('penalty_sum'), function_node(
-                    add, (Penalty()(place('D1')), Penalty()(place('D2'))),
-                    (system_objective,))),
-                *subproblems)))
-            # each requirement held by the problem owning its variables
-            + Combine(SUBPROBLEM_1, (SUBPROBLEM_1, G1_NODE, BOUND_NODES['x1']),
-                      cx.RelationalCondition)
-            + Combine(SUBPROBLEM_2, (SUBPROBLEM_2, G2_NODE), cx.RelationalCondition)
-            + Combine(SYSTEM, (SYSTEM, BOUND_NODES['z1'], BOUND_NODES['z2']),
-                      cx.RelationalCondition)
-            # nested: each subproblem solved in every evaluation of the system subproblem
+            # 2. the system subproblem's sum, each subproblem and its penalty functions; each
+            #    requirement into the problem owning its variables
+            + insert(flat.node('penalty_sum'), function_node(
+                add, (Penalty()(place('D1')), Penalty()(place('D2'))), (system_objective,)))
+            + subproblems[0] + penalties[0] + subproblems[1] + penalties[1]
+            + combine(SYSTEM, BOUND_NODES['z1'], BOUND_NODES['z2'])
+            + combine(SUBPROBLEM_1, G1_NODE, BOUND_NODES['x1'])
+            + combine(SUBPROBLEM_2, G2_NODE)
+            # 3. the subproblems, then the system subproblem solving them in every evaluation
+            + determines[0] + determines[1]
+            + Determine(SYSTEM, (z1, z2, y1_hat, y2_hat))
             + Nest(SUBPROBLEM_1, SYSTEM) + Nest(SUBPROBLEM_2, SYSTEM))
 
 
@@ -222,43 +245,42 @@ def atc(base):
         SubproblemObjective()(place(at)) for at in ('subproblem_1', 'subproblem_2', 'opt'))
     penalties = (flat.node('penalty_1'), flat.node('penalty_2'))
     top = flat.node('top')
+    # the top's copies of what the subproblems read of the system subproblem, each beside it
+    held_fixed = tuple((cx.Copy()(v), v) for v in (z1, z2, y1_hat, y2_hat))
     return (base
-            # the system subproblem's targets, and each subproblem's own copy of z
+            # 1. the system subproblem's targets read in place of the couplings, each
+            #    subproblem's own copy of z; the declared optimiser determines nothing and
+            #    minimises its penalties, so the declared sum of the objective terms goes
             + Cut(y2, (D1_NODE,), cx.Copy())
             + Cut(y1, (D2_NODE,), cx.Copy())
             + Cut(z1, (D1_NODE,), Copy1()) + Cut(z2, (D1_NODE,), Copy1())
             + Cut(z1, (D2_NODE,), Copy2()) + Cut(z2, (D2_NODE, F2_NODE), Copy2())
-            # the declared optimiser owns the system subproblem's variables and minimises its
-            # penalties
             + Undetermine(SYSTEM)
-            + Determine(SYSTEM, (z1, z2, y1_hat, y2_hat))
             + Rename(SYSTEM, ((f, system_objective),))
             + Delete((F_NODE,))
-            # each problem's penalty functions, and the subproblems
-            + Insert(OrderedMap((
-                (flat.node('penalty_system'), function_node(
-                    penalty, (weight, *every_pair), (system_objective,))),
-                subproblem_penalty('D1', f1), subproblem_penalty('D2', f2),
-                (SUBPROBLEM_1, cx.RelationalCondition(
-                    relations=(), parameters=(),
-                    objectives=(cx.Objective(objective_1, cx.Min),),
-                    unknowns=(z1_copy1, z2_copy1, x1))),
-                (SUBPROBLEM_2, cx.RelationalCondition(
-                    relations=(), parameters=(),
-                    objectives=(cx.Objective(objective_2, cx.Min),),
-                    unknowns=(z1_copy2, z2_copy2))))))
-            # each requirement held by the problem owning its variables
-            + Combine(SUBPROBLEM_1, (SUBPROBLEM_1, G1_NODE, BOUND_NODES['x1']),
-                      cx.RelationalCondition)
-            + Combine(SUBPROBLEM_2, (SUBPROBLEM_2, G2_NODE), cx.RelationalCondition)
-            + Combine(SYSTEM, (SYSTEM, BOUND_NODES['z1'], BOUND_NODES['z2']),
-                      cx.RelationalCondition)
-            # solved in turn: a fixed point over the problems, owning the subproblems' view of
-            # the system subproblem's variables, the problems nested in it
-            + cx.FixedPointCut((Cut(z1, penalties, cx.Copy()),
-                                Cut(z2, penalties, cx.Copy()),
-                                Cut(y1_hat, (D2_NODE, penalties[0]), cx.Copy()),
-                                Cut(y2_hat, (D1_NODE, penalties[1]), cx.Copy())), top)
+            # 2. the system subproblem's penalty functions, each subproblem and its penalty
+            #    functions; each requirement into the problem owning its variables
+            + insert(flat.node('penalty_system'), function_node(
+                penalty, (weight, *every_pair), (system_objective,)))
+            + insert(SUBPROBLEM_1, condition(objectives=(cx.Objective(objective_1, cx.Min),)))
+            + insert(*subproblem_penalty('D1', f1))
+            + insert(SUBPROBLEM_2, condition(objectives=(cx.Objective(objective_2, cx.Min),)))
+            + insert(*subproblem_penalty('D2', f2))
+            + combine(SYSTEM, BOUND_NODES['z1'], BOUND_NODES['z2'])
+            + combine(SUBPROBLEM_1, G1_NODE, BOUND_NODES['x1'])
+            + combine(SUBPROBLEM_2, G2_NODE)
+            # 3. the problems solved in turn; then the top over them: the subproblems' reads
+            #    of the system subproblem's variables cut, the fixed point owning the copies,
+            #    and the problems nested in it
+            + Determine(SYSTEM, (z1, z2, y1_hat, y2_hat))
+            + Determine(SUBPROBLEM_1, (z1_copy1, z2_copy1, x1))
+            + Determine(SUBPROBLEM_2, (z1_copy2, z2_copy2))
+            + Cut(z1, penalties, cx.Copy())
+            + Cut(z2, penalties, cx.Copy())
+            + Cut(y1_hat, (D2_NODE, penalties[0]), cx.Copy())
+            + Cut(y2_hat, (D1_NODE, penalties[1]), cx.Copy())
+            + insert(top, condition(tuple(cx.Relation(c, v, cx.Eq) for c, v in held_fixed)))
+            + Determine(top, tuple(c for c, _ in held_fixed))
             + Nest(SYSTEM, top) + Nest(SUBPROBLEM_1, top) + Nest(SUBPROBLEM_2, top))
 
 
@@ -284,35 +306,28 @@ def qsd(base):
                                      for at in ('subproblem_1', 'opt'))
     margin = flat.node('margin')
     return (base
-            # the system subproblem's target
+            # 1. the system subproblem's target read in place of the coupling; the declared
+            #    optimiser determines nothing and minimises f2 + b1, so the declared sum of the
+            #    objective terms goes, and the requirements the margins replace
             + Cut(y1, (D2_NODE,), cx.Copy())
-            # the declared optimiser owns the system subproblem's variables and minimises
-            # f2 + b1
             + Undetermine(SYSTEM)
-            + Determine(SYSTEM, (z1, z2, y1_hat, b1))
             + Rename(SYSTEM, ((f, system_objective),))
             + Delete((F_NODE, G1_NODE, BOUND_NODES['x1']))
-            # the system's and the discipline's functions, the subproblem, and the margin the
-            # system subproblem holds
-            + Insert(OrderedMap((
-                (flat.node('budget_sum'), function_node(add, (f2, b1), (system_objective,))),
-                (flat.node('margins_1'), function_node(
-                    qsd_margins, (g1, f1, b1, x1, s1),
-                    (g1_loose, f1_loose, x1_loose, objective_1))),
-                (SUBPROBLEM_1, cx.RelationalCondition(
-                    relations=(cx.Relation(g1_loose, None, cx.Le),
-                               cx.Relation(f1_loose, None, cx.Le),
-                               cx.Relation(s1, x1, cx.Le),
-                               cx.Relation(x1_loose, upper_x1, cx.Le),
-                               cx.Relation(y1_hat, y1, cx.Eq)),
-                    objectives=(cx.Objective(objective_1, cx.Min),),
-                    unknowns=(x1, s1), parameters=(y1_hat, upper_x1))),
-                (margin, cx.RelationalCondition(relations=(cx.Relation(None, s1, cx.Le),),
-                                                objectives=(), unknowns=(), parameters=())))))
-            # each requirement held by the problem owning its variables
-            + Combine(SYSTEM, (SYSTEM, margin, G2_NODE, BOUND_NODES['z1'], BOUND_NODES['z2']),
-                      cx.RelationalCondition)
-            # nested: the subproblem solved in every evaluation of the system subproblem
+            # 2. the margin the system subproblem holds and its sum, the subproblem and its
+            #    margins; each requirement into the problem owning its variables
+            + insert(margin, condition((cx.Relation(None, s1, cx.Le),)))
+            + insert(flat.node('budget_sum'), function_node(add, (f2, b1), (system_objective,)))
+            + insert(SUBPROBLEM_1, condition(
+                (cx.Relation(g1_loose, None, cx.Le), cx.Relation(f1_loose, None, cx.Le),
+                 cx.Relation(s1, x1, cx.Le), cx.Relation(x1_loose, upper_x1, cx.Le),
+                 cx.Relation(y1_hat, y1, cx.Eq)),
+                (cx.Objective(objective_1, cx.Min),), (y1_hat, upper_x1)))
+            + insert(flat.node('margins_1'), function_node(
+                qsd_margins, (g1, f1, b1, x1, s1), (g1_loose, f1_loose, x1_loose, objective_1)))
+            + combine(SYSTEM, margin, G2_NODE, BOUND_NODES['z1'], BOUND_NODES['z2'])
+            # 3. the subproblem, then the system subproblem solving it in every evaluation
+            + Determine(SUBPROBLEM_1, (x1, s1))
+            + Determine(SYSTEM, (z1, z2, y1_hat, b1))
             + Nest(SUBPROBLEM_1, SYSTEM))
 
 
@@ -321,36 +336,28 @@ def qsd(base):
 # Asymmetric subspace optimisation: one discipline optimised inside the MDA, the other only
 # analysed there. Sellar's `D2` has no local design variable, so `D1` is optimised. The system
 # optimiser owns `z`, minimises `f`, and holds `g2`, the constraint of the discipline not
-# optimised. The MDA owns the copy `ŷ2`, read by `D1` and by `f2`, and holds its consistency.
-# The subproblem, nested in the MDA, owns `x1`, minimises the system optimiser's own `f` with
-# `ŷ2` fixed, and holds `g1`: each of its iterations runs `D1` alone, and `D2` is the MDA's.
+# optimised. The MDA owns the copy `ŷ1`, read by `D2`, and holds `ŷ1 = y1`. The subproblem,
+# nested in the MDA, owns `x1`, minimises the system optimiser's own `f` with `ŷ1` fixed, and
+# holds `g1`. Each MDA iteration runs `D2`, the analysed discipline, then the subproblem, each
+# of whose iterations runs `D1` alone, as Martins & Lambe's Algorithm 11 runs them.
 
 def aso(base):
     mda = flat.node('mda')
     return (base
-            # acyclic: the declared optimiser gives up its unknowns, and D1 and f2 read the
-            # copy ŷ2 in place of the coupling
+            # 1. D2 reads the copy ŷ1 in place of the coupling; the declared optimiser
+            #    determines nothing
+            + Cut(y1, (D2_NODE,), cx.Copy())
             + Undetermine(SYSTEM)
-            + Cut(y2, (D1_NODE, F2_NODE), cx.Copy())
-            # the new condition nodes, determining nothing yet: the MDA's ŷ2 = y2, and the
-            # subproblem minimising f
-            + Insert(OrderedMap((
-                (mda, cx.RelationalCondition(
-                    relations=(cx.Relation(y2_hat, y2, cx.Eq),), objectives=(),
-                    unknowns=(), parameters=())),
-                (SUBPROBLEM_1, cx.RelationalCondition(
-                    relations=(), objectives=(cx.Objective(f, cx.Min),),
-                    unknowns=(), parameters=())))))
-            # each requirement combined into the condition node that will own its variables
-            + Combine(SUBPROBLEM_1, (SUBPROBLEM_1, G1_NODE, BOUND_NODES['x1']),
-                      cx.RelationalCondition)
-            + Combine(SYSTEM, (SYSTEM, G2_NODE, BOUND_NODES['z1'], BOUND_NODES['z2']),
-                      cx.RelationalCondition)
-            # each problem determined, innermost first, the problems inside it nested in it
-            # right after: the subproblem over x1, the MDA over ŷ2 around it, the system
-            # optimiser over z around the MDA
+            # 2. the MDA's ŷ1 = y1, the subproblem minimising f; each requirement into the
+            #    problem owning its variables
+            + insert(mda, condition((cx.Relation(y1_hat, y1, cx.Eq),)))
+            + insert(SUBPROBLEM_1, condition(objectives=(cx.Objective(f, cx.Min),)))
+            + combine(SYSTEM, G2_NODE, BOUND_NODES['z1'], BOUND_NODES['z2'])
+            + combine(SUBPROBLEM_1, G1_NODE, BOUND_NODES['x1'])
+            # 3. the subproblem over x1, the MDA over ŷ1 around it, the system optimiser over
+            #    z around the MDA
             + Determine(SUBPROBLEM_1, (x1,))
-            + Determine(mda, (y2_hat,)) + Nest(SUBPROBLEM_1, mda)
+            + Determine(mda, (y1_hat,)) + Nest(SUBPROBLEM_1, mda)
             + Determine(SYSTEM, (z1, z2)) + Nest(mda, SYSTEM))
 
 
@@ -369,28 +376,23 @@ def bliss2000(base):
     w1, objective_1 = Weight()(place('D1')), SubproblemObjective()(place('subproblem_1'))
     held = flat.node('consistency')
     return (base
-            # the system subproblem's targets
+            # 1. the system subproblem's targets read in place of the couplings; the declared
+            #    optimiser determines nothing
             + Cut(y2, (D1_NODE,), cx.Copy())
             + Cut(y1, (D2_NODE,), cx.Copy())
-            # the declared optimiser owns the system subproblem's variables and the weight
             + Undetermine(SYSTEM)
+            # 2. the consistency the system subproblem holds, the subproblem and its weighted
+            #    response; each requirement into the problem owning its variables
+            + insert(held, condition((cx.Relation(y1_hat, y1, cx.Eq),
+                                      cx.Relation(y2_hat, y2, cx.Eq))))
+            + insert(SUBPROBLEM_1, condition(objectives=(cx.Objective(objective_1, cx.Min),)))
+            + insert(flat.node('weighted_1'), function_node(multiply, (w1, y1), (objective_1,)))
+            + combine(SYSTEM, held, G2_NODE, BOUND_NODES['z1'], BOUND_NODES['z2'])
+            + combine(SUBPROBLEM_1, G1_NODE, BOUND_NODES['x1'])
+            # 3. the subproblem, then the system subproblem, owning the weight too, solving it
+            #    in every evaluation
+            + Determine(SUBPROBLEM_1, (x1,))
             + Determine(SYSTEM, (z1, z2, y1_hat, y2_hat, w1))
-            # the weighted response, the subproblem, and the consistency the system
-            # subproblem holds
-            + Insert(OrderedMap((
-                (flat.node('weighted_1'), function_node(multiply, (w1, y1), (objective_1,))),
-                (SUBPROBLEM_1, cx.RelationalCondition(
-                    relations=(), parameters=(),
-                    objectives=(cx.Objective(objective_1, cx.Min),), unknowns=(x1,))),
-                (held, cx.RelationalCondition(
-                    relations=(cx.Relation(y1_hat, y1, cx.Eq), cx.Relation(y2_hat, y2, cx.Eq)),
-                    objectives=(), unknowns=(), parameters=())))))
-            # each requirement held by the problem owning its variables
-            + Combine(SUBPROBLEM_1, (SUBPROBLEM_1, G1_NODE, BOUND_NODES['x1']),
-                      cx.RelationalCondition)
-            + Combine(SYSTEM, (SYSTEM, held, G2_NODE, BOUND_NODES['z1'], BOUND_NODES['z2']),
-                      cx.RelationalCondition)
-            # nested: the subproblem solved in every evaluation of the system subproblem
             + Nest(SUBPROBLEM_1, SYSTEM))
 
 
