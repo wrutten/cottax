@@ -328,21 +328,30 @@ def qsd(base):
 def aso(base):
     mda = flat.node('mda')
     return (base
-            # the declared optimiser keeps z; x1 goes to the subproblem
+            # acyclic: the declared optimiser gives up its unknowns, and D1 and f2 read the
+            # copy ŷ2 in place of the coupling
             + Undetermine(SYSTEM)
-            + Determine(SYSTEM, (z1, z2))
-            + Insert(OrderedMap(((SUBPROBLEM_1, cx.RelationalCondition(
-                relations=(), parameters=(), objectives=(cx.Objective(f, cx.Min),),
-                unknowns=(x1,))),)))
-            # each requirement held by the problem owning its variables
+            + Cut(y2, (D1_NODE, F2_NODE), cx.Copy())
+            # the new condition nodes, determining nothing yet: the MDA's ŷ2 = y2, and the
+            # subproblem minimising f
+            + Insert(OrderedMap((
+                (mda, cx.RelationalCondition(
+                    relations=(cx.Relation(y2_hat, y2, cx.Eq),), objectives=(),
+                    unknowns=(), parameters=())),
+                (SUBPROBLEM_1, cx.RelationalCondition(
+                    relations=(), objectives=(cx.Objective(f, cx.Min),),
+                    unknowns=(), parameters=())))))
+            # each requirement combined into the condition node that will own its variables
             + Combine(SUBPROBLEM_1, (SUBPROBLEM_1, G1_NODE, BOUND_NODES['x1']),
                       cx.RelationalCondition)
             + Combine(SYSTEM, (SYSTEM, G2_NODE, BOUND_NODES['z1'], BOUND_NODES['z2']),
                       cx.RelationalCondition)
-            # the MDA closing the coupling, the subproblem inside it, both inside the system
-            # optimiser
-            + cx.FixedPointCut((Cut(y2, (D1_NODE, F2_NODE), cx.Copy()),), mda)
-            + Nest(SUBPROBLEM_1, mda) + Nest(mda, SYSTEM))
+            # each problem determined, innermost first, the problems inside it nested in it
+            # right after: the subproblem over x1, the MDA over ŷ2 around it, the system
+            # optimiser over z around the MDA
+            + Determine(SUBPROBLEM_1, (x1,))
+            + Determine(mda, (y2_hat,)) + Nest(SUBPROBLEM_1, mda)
+            + Determine(SYSTEM, (z1, z2)) + Nest(mda, SYSTEM))
 
 
 # ---------------------------------------------------------------- BLISS-2000 (Eqs. 16-17, Fig. 12)
