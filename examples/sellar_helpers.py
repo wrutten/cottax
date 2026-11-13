@@ -322,15 +322,18 @@ def function_node(body, reads, owns):
 
 @dataclasses.dataclass(frozen=True)
 class FiniteDifferences:
-    '''A Jacobian by forward differences of `step`, for `SLSQP(jacobian=...)`.'''
+    '''A Jacobian by forward differences of `step`, for `ScipyMinimize(jacobian=...)`: a
+    function of `g`, as `jax.jacfwd`, with `has_aux` as it takes it.'''
 
     step : float = 1e-6
 
-    def __call__(self, g):
+    def __call__(self, g, has_aux=False):
+        value = (lambda x: g(x)[0]) if has_aux else g
         def jacobian(x):
-            base = g(x)
-            return jnp.stack([(g(x + self.step * e) - base) / self.step
-                              for e in jnp.eye(x.size, dtype=x.dtype)], axis=-1)
+            base = value(x)
+            jac = jnp.stack([(value(x + self.step * e) - base) / self.step
+                             for e in jnp.eye(x.size, dtype=x.dtype)], axis=-1)
+            return (jac, g(x)[1]) if has_aux else jac
         return jacobian
 
 
@@ -356,10 +359,10 @@ def with_solvers(model: cx.Declared, differences: bool = False, strict: bool = T
     system subproblem by SLSQP over finite differences.'''
     if differences:
         model = (model + flat.assign(SYSTEM, cx.ConstrainedMinimisation(steps=False))
-                 + flat.implement({SYSTEM: cx.SLSQP(jacobian=FiniteDifferences(),
-                                                    tol=system_tol, strict=system_strict)}))
+                 + flat.implement({SYSTEM: cx.ScipyMinimize(jacobian=FiniteDifferences(),
+                                                            tol=system_tol, strict=system_strict)}))
     tight = dict(rtol=1e-12, atol=1e-12, max_steps=1000)
-    return model + flat.drive(cx.SLSQP(strict=strict),
+    return model + flat.drive(cx.ScipyMinimize(strict=strict),
                               cx.Picard(**tight), cx.Newton(**tight))
 
 
