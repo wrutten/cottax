@@ -9,13 +9,13 @@ import re
 import pytest
 from jax.tree_util import GetAttrKey
 
-from cottax.core import Function
+from cottax.core import FunctionalNode
 from cottax.relational import Min, Objective
 from cottax.core.frozen import OrderedMap
 from cottax.core.maths.plan import Cut
 import purposes
 from cottax.pytree.path import NodePath, VarPath
-from cottax.core.realisation import ImplementedFunction
+from cottax.core.realisation import implemented
 from cottax.relational import Eq, Relation, RelationalCondition
 from cottax.relational.consumers.visualization import FIXED_POINT, KINDS, OPTIMISE, ROOT_FIND
 from cottax.consumers.visualization.latex import LatexFormatter, tex
@@ -41,7 +41,7 @@ def N(*keys) -> NodePath:
 
 
 def call(reads, owns):
-    return ImplementedFunction(Function(tuple(V(r) for r in reads), tuple(V(o) for o in owns)),
+    return implemented(FunctionalNode(tuple(V(r) for r in reads), tuple(V(o) for o in owns)),
                                lambda *a: None)
 
 
@@ -212,7 +212,7 @@ def test_a_relation_between_two_unknowns_is_slotted_as_written(closed):
 
 def test_every_picture_rings_a_solve_alike(sellar, closed):
     '''A ring's contour, in the XDSM, the N2 and the node-link: its driver's hue, grey
-    for a problem with no category, `unanswered` where no driver answers it.'''
+    for a problem with no category, `unanswered` where no single problem solves it.'''
     from cottax.consumers.visualization.matrix import render_matrix_svg
     fp = closed[N('fp')]
     two = RelationalCondition(fp.relations, (Objective(V('y1'), Min), Objective(V('z'), Min)),

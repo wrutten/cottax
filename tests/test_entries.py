@@ -14,9 +14,9 @@ from cottax.relational import Min, Objective
 from cottax.core import ExecutableGraph, Plan
 from cottax.consumers.visualization.sequencing import Cycle, Run, Solve, Unresolved, walk, entries
 from cottax.pytree.path import NodePath, VarPath
-from cottax.core import Function
+from cottax.core import FunctionalNode
 from cottax.core.maths.plan import Nest
-from cottax.core.realisation import ImplementedFunction
+from cottax.core.realisation import implemented
 from cottax.relational import Eq, Relation, RelationalCondition
 from cottax.consumers.visualization.sequencing import ordered_graph, sequence
 from cottax.consumers.visualization.xdsm import xdsm_struct
@@ -29,7 +29,7 @@ from cottax.core.maths.nesting import NestingGraph
 def V(k): return VarPath((GetAttrKey(k),))
 def N(k): return NodePath((GetAttrKey(k),))
 def call(reads, owns):
-    return ImplementedFunction(Function(tuple(V(r) for r in reads), tuple(V(o) for o in owns)),
+    return implemented(FunctionalNode(tuple(V(r) for r in reads), tuple(V(o) for o in owns)),
                        lambda *a: 0.0)
 
 
@@ -346,15 +346,15 @@ def test_the_walk_stops_where_nothing_is_nested():
     assert walk(shared)[1].held is None
 
 
-def test_a_link_whose_cycle_runs_through_a_removed_leaf_is_dropped_inside():
+def test_a_link_whose_cycle_runs_through_a_removed_leaf_rings_nothing_inside():
     '''`i` a child of `o`, on `o`'s cycle only through the leaf `l`: with `l` removed, `o`
-    is on no cycle, so the link means nothing in the rest of the cycle and is dropped there.
+    is on no cycle, so the link stays, inert, its ends in different components of the rest.
     `i` keeps its ring, `o` is drawn as a plain node inside the grey ring, and the drawing
     refuses nothing.'''
     g = link_through_leaf()
     grey = walk(g)[0]
     assert isinstance(grey.entry, Unresolved) and grey.entry.problems == (N('o'), N('l'))
-    assert removed(grey) == (N('l'),) and not grey.held.within
+    assert removed(grey) == (N('l'),) and dict(grey.held.within) == {N('i'): N('o')}
     assert [(b.problem, b.depth) for b in walk(g) if b.solved] == [(None, 0), (N('i'), 1)]
     assert sequence(g) == (N('l'), N('i'), N('B'), N('o'), N('A'))
 
@@ -375,7 +375,7 @@ def test_a_ring_is_unsettled_where_its_problem_is_part_of_the_grey_rings_decisio
 
 def rebound(g, order):
     '''`g` with its problems dealt into the binding positions they hold, in `order`.'''
-    dealt, problems = iter(order), set(g.problems)
+    dealt, problems = iter(order), set(g.enclosers)
     return graph_of({(m := next(dealt) if n in problems else n): g[m] for n in g.nodes},
                     tuple(g.within.items()))
 
@@ -392,7 +392,7 @@ def test_the_boxes_do_not_depend_on_which_problem_is_bound_first(name):
     same depths, of the same types. Only the diagonal changes: the problems on each grey ring
     lead its stretch in binding order, so whichever is bound first comes first.'''
     g = ARRANGEMENTS[name]()
-    for order in permutations(g.problems):
+    for order in permutations(g.enclosers):
         other = rebound(g, order)
         assert boxes(other) == boxes(g)
         diagonal = sequence(other)

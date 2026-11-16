@@ -22,9 +22,10 @@ from cottax.relational.relational_condition import (
     FixedAndMoved, FixedRelation, NotARel, ParameterUnrelated, RelatesNothing,
 )
 from cottax.pytree.path import NodePath, VarPath
-from cottax.core import Function, problems, violations
+from cottax.core import FunctionalNode, enclosers, violations
 from cottax.core.maths.definition import ReadsOwn
-from cottax.core.realisation import ImplementedFunction
+from cottax.core.maths.kinds import ReadOnBothSides
+from cottax.core.realisation import implemented
 from cottax.core.driven import Driven
 from cottax.relational.contracts import RootFinding, is_iteration
 from cottax.assemblies.jax import absolute
@@ -70,8 +71,8 @@ def stated(*relations) -> RelationalCondition:
 
 
 def model() -> dict:
-    return {n('m'): ImplementedFunction(
-        Function((v('u'),), (v('gu'), v('r'), v('cost'), v('g1'))),
+    return {n('m'): implemented(
+        FunctionalNode((v('u'),), (v('gu'), v('r'), v('cost'), v('g1'))),
         lambda u: (0.5 * u + 1.0, u, u, u),
     )}
 
@@ -163,8 +164,8 @@ def test_conditions_are_the_objectives_then_the_terms_that_are_not_unknowns():
     c = RelationalCondition(
         (Relation(v('u'), v('gu'), Eq), Relation(v('g1'), None, Le)),
         (Objective(v('cost'), Min),), (v('u'),), ())
-    assert c.conditions == (v('cost'), v('gu'), v('g1'))
-    assert c.reads == c.conditions and c.owns == c.unknowns
+    assert c.reads_inside == (v('cost'), v('gu'), v('g1'))
+    assert c.reads == c.reads_inside and c.owns == c.unknowns
 
 
 @pytest.mark.parametrize('op', ['eq', int])
@@ -195,7 +196,7 @@ def test_a_parameter_is_read_and_is_no_condition():
     conditions, and only `g` must be moved by the unknowns.'''
     n = RelationalCondition((Relation(v('lo'), v('u'), Le), Relation(v('g'), v('g_max'), Le)),
                             (), (v('u'),), (v('lo'), v('g_max')))
-    assert n.conditions == (v('g'),)
+    assert n.reads_inside == (v('g'),)
     assert n.reads == (v('g'), v('lo'), v('g_max'))
     assert n.owns == (v('u'),)
 
@@ -205,7 +206,7 @@ def test_a_parameter_is_held_fixed_related_and_never_alone():
     found = lambda relations, objectives, parameters: [type(x) for x in violations(
         RelationalCondition, relations, objectives, (u,), parameters)]
     assert found((Relation(lo, u, Le),), (), (u,)) == [ReadsOwn, FixedAndMoved]
-    assert found((Relation(g, u, Le),), (Objective(g, Min),), (g,)) == [FixedAndMoved]
+    assert found((Relation(g, u, Le),), (Objective(g, Min),), (g,)) == [ReadOnBothSides, FixedAndMoved]
     assert found((Relation(g, None, Le),), (), (lo,)) == [ParameterUnrelated]
     assert found((Relation(lo, hi, Le), Relation(lo, None, Le)), (), (lo, hi)) == [FixedRelation]
     assert found((Relation(lo, u, Le), Relation(u, hi, Le)), (), (lo, hi)) == []
@@ -348,7 +349,7 @@ def test_a_shape_predicate_answers_false_off_a_relational_condition():
     A function, or a driven node, has no relations to read: every predicate answers
     False, and a drawing gives it no category.
     """
-    body = ImplementedFunction(Function((v('u'),), (v('r'),)), lambda u: u)
+    body = implemented(FunctionalNode((v('u'),), (v('r'),)), lambda u: u)
     driven = Driven(root_find((v('r'),), (v('u'),)), RootFinding(steps=False),
                     ((purposes.Start()(v('u')),),), ())
     for node in (body, driven):
@@ -388,7 +389,7 @@ def test_the_join_refuses_anything_but_a_relational_condition_on_either_side():
     plain  = root_find((v('r'),), (v('u'),))
     driven = Driven(root_find((v('r2'),), (v('x'),)), RootFinding(steps=False),
                     ((purposes.Start()(v('x')),),), ())
-    body   = ImplementedFunction(Function((v('u'),), (v('r'),)), lambda u: u)
+    body   = implemented(FunctionalNode((v('u'),), (v('r'),)), lambda u: u)
     for a, b in ((plain, driven), (driven, plain), (body, body),
                  (optimise(v('f'), (v('x'),)), driven)):
         with pytest.raises(TypeError, match='unsupported operand'):
@@ -421,7 +422,7 @@ def test_driven_join():
 
 def test_a_proof_refuses_a_statement_that_determines_nothing():
     g = graph_with(stated(Relation(v('r'), None, Eq)))
-    assert problems(g.definitions) == ()
+    assert enclosers(g.definitions) == ()
     with pytest.raises(ValueError, match='holds .* against nothing'):
         ExecutableGraph(g)
 
@@ -449,6 +450,6 @@ def test_a_problem_with_no_conditions_is_off_its_cycle():
     """
     p = Plan(graph_with(RelationalCondition((Relation(v('u'), None, Eq),), (), (v('u'),), ())))
     p = p + assign(n('c'), RootFinding(steps=False))
-    assert p.graph[n('c')].conditions == ()
+    assert p.graph[n('c')].reads_inside == ()
     with pytest.raises(ValueError, match='in no cycle'):
         ExecutableGraph(p.graph)

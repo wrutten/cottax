@@ -8,12 +8,12 @@ fixtures and helpers here are shared with `test_mdao_architectures.py`.
 import pytest
 from jax.tree_util import GetAttrKey
 
-from cottax.core import Function, is_problem
+from cottax.core import FunctionalNode, is_encloser
 from cottax.relational import Min, Objective
 from cottax.core.maths.executable import ExecutableGraph
 from cottax.core.maths.plan import Cut, Nest, Plan
 from cottax.core.frozen import violations
-from cottax.core.realisation import ImplementedFunction
+from cottax.core.realisation import implemented
 from cottax.consumers.architectures import IDF, MDF, SAND
 from cottax.core.maths.cut_rules import (
     ByName, CutRule, GaussSeidel, GaussSeidelMinimal, GaussSeidelOrdered, Jacobi, NoCuts,
@@ -60,7 +60,7 @@ def N(*keys) -> NodePath:
 
 
 def call(reads, owns):
-    return ImplementedFunction(Function(tuple(V(r) for r in reads), tuple(V(o) for o in owns)),
+    return implemented(FunctionalNode(tuple(V(r) for r in reads), tuple(V(o) for o in owns)),
                        lambda *a: None)
 
 
@@ -79,7 +79,7 @@ def cyc(g, *nodes):
 
 def bodies(g):
     '''The function nodes of `g`, as a rule sees them under `Bodies()`.'''
-    return g.graph.subgraph(n for n, d in g.definitions.items() if not is_problem(d))
+    return g.graph.subgraph(n for n, d in g.definitions.items() if not is_encloser(d))
 
 
 OPT, D1, D2 = N('opt'), N('D1'), N('D2')

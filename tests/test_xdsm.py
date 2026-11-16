@@ -19,8 +19,8 @@ from cottax.relational import Eq, Le, Relation, RelationalCondition
 from cottax.core.maths.plan import Cut
 from cottax.relational.rewrites import FixedPointCut
 from cottax.pytree.path import NodePath, VarPath
-from cottax.core import Function
-from cottax.core.realisation import ImplementedFunction
+from cottax.core import FunctionalNode
+from cottax.core.realisation import implemented
 import purposes
 from cottax.relational.consumers.visualization import FIXED_POINT, OPTIMISE
 from cottax.consumers.visualization.style import DARK, PYXDSM, TERRACOTTA
@@ -39,6 +39,8 @@ from graphs import (NESTED, NESTED_BESIDE_P, NOTHING_NESTED, UNORDERED_IN_P, gra
                     three_problems)
 
 HAT, PROBLEM, START = purposes.Copy(), purposes.Solve(), purposes.Start()
+UNSOLVED = 'no/too many drivers'
+'''The key's entry for a grey ring cut open.'''
 
 
 def optimise(objective, unknowns, inequalities=()) -> RelationalCondition:
@@ -67,7 +69,7 @@ def N(*keys) -> NodePath:
 
 
 def call(reads, owns):
-    return ImplementedFunction(Function(tuple(V(r) for r in reads), tuple(V(o) for o in owns)),
+    return implemented(FunctionalNode(tuple(V(r) for r in reads), tuple(V(o) for o in owns)),
                        lambda *a: None)
 
 
@@ -138,7 +140,7 @@ def test_only_a_coupled_block_is_ringed_as_one(sellar):
 
 def test_the_figure_and_the_page_key_alike_and_once(sellar, nestable):
     '''One key, each entry once: under `PYXDSM` run rings at two depths are one entry,
-    and a ring no driver answers is keyed in either picture.'''
+    and a ring no single problem solves is keyed in either picture.'''
     from cottax.consumers.visualization.page import Pictures
     from cottax.consumers.visualization.xdsm import key_entries
     from cottax.consumers.visualization.xdsm_html import xdsm_view
@@ -152,7 +154,7 @@ def test_the_figure_and_the_page_key_alike_and_once(sellar, nestable):
             texts = [e['text'] for e in key_entries(struct, style)]
             assert len(texts) == len(set(texts))
             assert ('run in order' in texts) == (style is PYXDSM)
-            assert ('no driver' in texts) == (graph is sellar)
+            assert (UNSOLVED in texts) == (graph is sellar)
             page = xdsm_view(graph, Pictures(), blocks=blocks, style=style)['legend']
             assert [e['text'] for e in page] == texts
             svg = render_xdsm_svg(graph, blocks=blocks, style=style)
@@ -177,7 +179,7 @@ def mdf():
     hat_y2 = Cut(V('y2'), [N('d1')], HAT).copy
     return graph_of(OrderedMap({
         N('opt'): optimise(V('f'), (V('z'),)),
-        N('d1') : ImplementedFunction(Function((V('z'), hat_y2), (V('y1'),)), lambda *a: None),
+        N('d1') : implemented(FunctionalNode((V('z'), hat_y2), (V('y1'),)), lambda *a: None),
         N('d2') : call(['z', 'y1'], ['y2']),
         N('mda'): fixed_point((V('y2'),), (hat_y2,)),
         N('obj'): call(['z', 'y1', 'y2'], ['f']),
@@ -199,7 +201,7 @@ def test_a_problems_conditions_are_slotted_by_what_each_one_says():
             (Relation(V('h'), None, Eq), Relation(V('g'), None, Le),
              Relation(hat_y2, V('y2'), Eq)),
             (Objective(V('f'), Min),), (V('z'), hat_y2), ()),
-        N('m')  : ImplementedFunction(Function((V('z'), hat_y2),
+        N('m')  : implemented(FunctionalNode((V('z'), hat_y2),
                                        (V('f'), V('g'), V('h'), V('y2'))),
                               lambda *a: None),
     }))
@@ -341,8 +343,8 @@ def test_two_places_spelled_alike_are_refused_naming_both():
     drawn from whichever owner came last.'''
     ab, a_b = VarPath((DictKey('a'), DictKey('b'))), VarPath((DictKey('a'), GetAttrKey('b')))
     g = graph_of(OrderedMap({
-        N('p'): Function((), (ab,)), N('q'): Function((), (a_b,)),
-        N('r'): Function((ab,), (V('z'),)),
+        N('p'): FunctionalNode((), (ab,)), N('q'): FunctionalNode((), (a_b,)),
+        N('r'): FunctionalNode((ab,), (V('z'),)),
     }))
     for draw in (xdsm_struct, render_xdsm_svg):
         with pytest.raises(ValueError) as e:
@@ -352,7 +354,7 @@ def test_two_places_spelled_alike_are_refused_naming_both():
 
 def test_two_node_names_spelled_alike_are_refused_naming_both():
     n0, s0 = NodePath((DictKey(0),)), NodePath((SequenceKey(0),))
-    g = graph_of(OrderedMap({n0: Function((), (V('x'),)), s0: Function((V('x'),), (V('y'),))}))
+    g = graph_of(OrderedMap({n0: FunctionalNode((), (V('x'),)), s0: FunctionalNode((V('x'),), (V('y'),))}))
     with pytest.raises(ValueError) as e:
         render_xdsm_svg(g)
     assert e.value.args[0] == SpelledAlike(n0, s0, '[0]').message
@@ -476,17 +478,17 @@ def test_a_nesting_inside_a_grey_ring_is_ringed_inside_it():
 
 
 def test_a_ring_whose_nesting_is_open_is_keyed_once():
-    '''`r` in `q` beside `p`: the key has the grey ring no driver answers, cut open, and
+    '''`r` in `q` beside `p`: the key has the grey ring no single problem solves, cut open, and
     `q`'s ring, grey and closed, as a nesting still open; with `q` nested in `p`, neither.'''
     from cottax.consumers.visualization.xdsm import key_entries
     for nesting, keyed in ((NESTED_BESIDE_P, True), (NESTED, False)):
         graph = three_problems(*nesting)
         entries = {e['text']: e for e in key_entries(xdsm_struct(graph, blocks=True), TERRACOTTA)}
-        assert ('nesting still open' in entries) == ('no driver' in entries) == keyed
+        assert ('nesting still open' in entries) == (UNSOLVED in entries) == keyed
         if keyed:
-            assert [entries[t]['shape'] for t in ('no driver', 'nesting still open')] \
+            assert [entries[t]['shape'] for t in (UNSOLVED, 'nesting still open')] \
                 == ['open', 'band']
-            assert {entries[t]['stroke'] for t in ('no driver', 'nesting still open')} \
+            assert {entries[t]['stroke'] for t in (UNSOLVED, 'nesting still open')} \
                 == {TERRACOTTA.unanswered}
         assert render_xdsm_svg(graph, blocks=True).count('>nesting still open</text>') == keyed
 

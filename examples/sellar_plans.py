@@ -41,9 +41,8 @@ import dataclasses
 import cottax.assemblies.jax as cx
 from cottax.assemblies.jax import flat
 from cottax.core.frozen import OrderedMap
-from cottax.core.maths.plan import (
-    Combine, Cut, Delete, Determine, Insert, Nest, Rename, Undetermine,
-)
+from cottax.core.maths.plan import Combine, Cut, Delete, Insert, Nest, Rename
+from cottax.relational import Determine, Undetermine
 
 from sellar_helpers import (
     BOUND_NODES, CONSISTENCY, D1_NODE, D2_NODE, F1_NODE, F2_NODE, F_NODE, G1_NODE, G2_NODE,
@@ -67,7 +66,7 @@ def condition(relations=(), objectives=(), parameters=()):
     '''A condition node determining nothing, as a distributed plan inserts one (not a graph
     operation).'''
     return cx.RelationalCondition(relations=tuple(relations), objectives=tuple(objectives),
-                                  unknowns=(), parameters=tuple(parameters))
+                                  owns_inside=(), reads_outside=tuple(parameters))
 
 
 def combine(into, *requirements):
@@ -103,7 +102,7 @@ def aao(base):
             + Insert(OrderedMap(((held, cx.RelationalCondition(
                 relations=(cx.Relation(y1_hat, y1, cx.Eq), cx.Relation(y2_hat, y2, cx.Eq),
                            cx.Relation(y1, Y1, cx.Eq), cx.Relation(y2, Y2, cx.Eq)),
-                objectives=(), unknowns=(), parameters=())),)))
+                objectives=(), owns_inside=(), reads_outside=())),)))
             # every requirement held by the optimiser
             + Combine(SYSTEM, (SYSTEM, held, G1_NODE, G2_NODE, *BOUND_NODES.values()),
                       cx.RelationalCondition))

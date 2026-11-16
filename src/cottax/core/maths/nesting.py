@@ -3,13 +3,14 @@ Nesting graph: Graph + nesting forest
 '''
 
 from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import replace
 from typing import Self
 from functools import cached_property
 
 from ..frozen import Frozen, OrderedMap, Violation, first
 from .definition import NodeDefinition
 from .graph import AbstractGraph
-from .kinds import Function, is_problem, problems
+from .kinds import FunctionalNode, is_encloser, enclosers
 from .places import Label, Place
 
 
@@ -25,16 +26,16 @@ def check_nesting_ends_bound(g: 'NestingGraph') -> Iterator[Violation]:
             yield Unbound(inner, outer)
 
 
-def check_nesting_ends_are_problems(g: 'NestingGraph') -> Iterator[Violation]:
+def check_nesting_ends_are_enclosers(g: 'NestingGraph') -> Iterator[Violation]:
     '''
-    Nesting can only be between problems.
+    Nesting can only be between enclosers.
 
     W ⊆ N_P × N_P
     '''
     for inner, outer in g.within.items():
         if missing := tuple(e for e in (inner, outer)
-                            if e in g.definitions and not is_problem(g.definitions[e])):
-            yield NotAProblem(missing)
+                            if e in g.definitions and not is_encloser(g.definitions[e])):
+            yield NotAnEncloser(missing)
 
 
 def check_no_nesting_loops(g: 'NestingGraph') -> Iterator[Violation]:
@@ -74,10 +75,13 @@ def check_nesting_ends_on_one_cycle(g: 'NestingGraph') -> Iterator[Violation]:
 
     p ~ q  in  N \\ A(q)   ∀ (p, q) ∊ W       i.e.  p ∊ S_q, the cycle of q
 
-    A pair with an end unbound or not a problem is skipped: those are other rules'.
+    A pair with an end unbound or not an encloser is skipped: those are other rules'.
+
+    Not a rule of `NestingGraph`: nothing that reads a nesting needs it, so a plan may cut
+    a nested pair apart and `Unnest` it after. `ExecutableGraph` asks it.
     '''
     for inner, outer in g.within.items():
-        if not all(e in g.definitions and is_problem(g.definitions[e]) for e in (inner, outer)):
+        if not all(e in g.definitions and is_encloser(g.definitions[e]) for e in (inner, outer)):
             continue
         if inner not in g.cycle_of(outer):
             yield Unreachable(inner, outer)
@@ -114,7 +118,8 @@ class NestingGraph[N: Label, V: Place](Frozen):
     graph  : AbstractGraph[N, V]
     within : OrderedMap[N, N]
     checks = (check_nesting_ends_bound, check_no_nesting_loops,
-              check_nesting_ends_are_problems, check_nesting_ends_on_one_cycle)
+              check_nesting_ends_are_enclosers)
+    '''What makes a nesting readable.'''
 
     # ------------------------------------------------------------ the bindings, its own
 
@@ -138,22 +143,22 @@ class NestingGraph[N: Label, V: Place](Frozen):
     # ------------------------------------------------------------ the nesting
 
     @cached_property
-    def problems(self) -> tuple[N, ...]:
-        '''The problems, in binding order: the ends a nesting pair may have.'''
-        return problems(self.definitions)
+    def enclosers(self) -> tuple[N, ...]:
+        '''The enclosers, in binding order: the ends a nesting pair may have.'''
+        return enclosers(self.definitions)
 
     @cached_property
-    def outermost_problems(self) -> tuple[N, ...]:
-        '''Problems that are not nested in any other'''
-        return tuple(s for s in self.problems if self.within.get(s) is None)
+    def outermost_enclosers(self) -> tuple[N, ...]:
+        '''Enclosers that are not nested in any other'''
+        return tuple(s for s in self.enclosers if self.within.get(s) is None)
 
     def enclosing(self, problem: N) -> tuple[N, ...]:
-        '''The problems `problem` is nested in transitively: A(q), every problem with a
+        '''The enclosers `problem` is nested in transitively: A(q), every encloser with a
         path from q in (N_P, W).'''
 
         if problem not in self.definitions:
             raise KeyError(f'not a node of this graph: {problem!r}')
-        if not is_problem(self.definitions[problem]):
+        if not is_encloser(self.definitions[problem]):
             raise ValueError(f'{problem!r} is not a problem, so it is nested in nothing and '
                              f'iterates nothing -- enclosing, cycle_of and interior are a problem\'s')
         chain : list[N] = []
@@ -165,14 +170,14 @@ class NestingGraph[N: Label, V: Place](Frozen):
 
     @cached_property
     def _levels(self) -> dict[frozenset, AbstractGraph]:
-        '''The graph with each set of enclosing problems taken out, built once per set: the
-        problems nested alike share their level.'''
+        '''The graph with each set of enclosers taken out, built once per set: the
+        enclosers nested alike share their level.'''
         return {}
 
     def cycle_of(self, problem: N) -> tuple[N, ...]:
         '''
         The cycle `problem` is on, and itself: its strongly connected component in the
-        graph with the problems enclosing it taken out, in binding order.
+        graph with the enclosers around it taken out, in binding order.
 
         S_p = {k ∊ N \\ A(p) : k ~ p in N \\ A(p)}   (~ in the induced subgraph, not in G)
         '''
@@ -196,17 +201,15 @@ class NestingGraph[N: Label, V: Place](Frozen):
         dropping pairs with one end not kept.
         '''
         kept  = set(keep)
-        child = self._carried(graph=self.graph.subgraph(kept),
-                                within=OrderedMap((i, o) for i, o in self.within.items() if i in kept and o in kept))
-        first(check_nesting_ends_on_one_cycle(child))
-        return child
+        return self._carried(graph=self.graph.subgraph(kept),
+                             within=OrderedMap((i, o) for i, o in self.within.items() if i in kept and o in kept))
 
     def contract(self, blocks: tuple[tuple[N, ...], ...]) -> Self:
         '''
-        Each block of at least two nodes contracted into one `Function` at its first
+        Each block of at least two nodes contracted into one `FunctionalNode` at its first
         member's place: reading what the block reads from outside, owning what it owns.
-        Every pair with an end in a block is dropped, since a box is no problem. A pair
-        outside keeps its cycle, since a contraction only adds paths, so nothing is re-asked.
+        Every pair with an end in a block is dropped, since a box is no encloser. The
+        result is built through the checked constructors: every rule is asked of it.
         '''
         position = self.graph._position
         members = [n for block in blocks for n in block]
@@ -222,12 +225,12 @@ class NestingGraph[N: Label, V: Place](Frozen):
             owns  = tuple(dict.fromkeys(v for d in inside for v in d.owns))
             owned = set(owns)
             reads = tuple(dict.fromkeys(v for d in inside for v in d.reads if v not in owned))
-            boxed[order[0]] = Function(reads, owns)
+            boxed[order[0]] = FunctionalNode(reads, owns)
         gone = set(members) - set(boxed)
         definitions = OrderedMap((n, boxed.get(n, d)) for n, d in self.definitions.items() if n not in gone)
-        return self._carried(graph=self.graph._carried(definitions=definitions),
-                             within=OrderedMap((i, o) for i, o in self.within.items()
-                                               if i not in members and o not in members))
+        return replace(self, graph=replace(self.graph, definitions=definitions),
+                       within=OrderedMap((i, o) for i, o in self.within.items()
+                                         if i not in members and o not in members))
 
 
 # ---------------------------------------------------------------- a proof about one
@@ -246,9 +249,9 @@ class ProvedGraph[N: Label, V: Place](Frozen):
     @property
     def within(self) -> Mapping[N, N]:                           return self.graph.within
     @property
-    def problems(self) -> tuple[N, ...]:                         return self.graph.problems
+    def enclosers(self) -> tuple[N, ...]:                         return self.graph.enclosers
     @property
-    def outermost_problems(self) -> tuple[N, ...]:               return self.graph.outermost_problems
+    def outermost_enclosers(self) -> tuple[N, ...]:               return self.graph.outermost_enclosers
     def __getitem__(self, name: N) -> NodeDefinition[V]:          return self.graph[name]
     def __contains__(self, name: N) -> bool:                      return name in self.graph
     def enclosing(self, problem: N) -> tuple[N, ...]:             return self.graph.enclosing(problem)
@@ -269,11 +272,11 @@ class Unbound(Violation):
     template = 'nesting {inner!r} in {outer!r}: an end is not a node of this graph'
 
 
-class NotAProblem(Violation):
+class NotAnEncloser(Violation):
     nodes : tuple[Label, ...]
     error    = ValueError
     template = ('{nodes} determines nothing, so no iteration of it answers anything -- an end '
-                 'of a nesting is a problem: `Determine` it, naming the unknowns it fixes, or '
+                 'of a nesting is a problem: determine it, naming the unknowns it fixes, or '
                  '`Unnest` it first so the plan says the nesting went')
 
 
@@ -283,7 +286,7 @@ class Unreachable(Violation):
     error    = ValueError
     template = ('{inner!r} and {outer!r} are not on one cycle, so no iteration of the one '
                  're-runs the other and there is nothing for the nesting to mean -- '
-                 '`Unnest` it before cutting or rewiring the pair apart')
+                 '`Unnest` it, or keep the pair on one cycle')
 
 
 class SelfNested(Violation):

@@ -37,7 +37,7 @@ from cottax.relational.consumers.declaration.declarations import (
 from cottax.consumers.execution.jax_jit import JitGraph
 import purposes
 from cottax.pytree.path import DictKey, GetAttrKey, SequenceKey, VarPath
-from cottax.core.realisation import ImplementDrivers
+from cottax.core.realisation import ImplementDrivers, implementation_of
 from cottax.relational import is_fixed_point, is_root_find
 
 
@@ -148,7 +148,7 @@ def test_a_wrapper_is_its_function():
 
 def test_a_decorated_function_is_the_node_s_body_and_still_pickles_by_reference():
     graph = cx.absolute.declare(disc2, objective).graph
-    assert graph[n('disc2')].implementation is disc2.fn
+    assert implementation_of(graph[n('disc2')]) is disc2.fn
     assert pickle.loads(pickle.dumps(graph)) == graph
     assert pickle.loads(pickle.dumps(disc2.fn)) is disc2.fn
 
@@ -225,19 +225,19 @@ def test_a_function_yet_to_be_written_is_declared_by_its_parameters():
     '''A description in place of the function: its parameters are all a wrapper needs, the
     node it declares has no implementation, and every proof short of one holds. Written,
     the function takes its place.'''
-    from cottax.core import Function
+    from cottax.core import FunctionalNode
     from cottax.core.maths.executable import ExecutableGraph
     from cottax.core.realisation.proof import NoImplementation, RealisedGraph
     sketch = flat.function(cx.Unimplemented(('x', 'k')), 'y', reads={'k': 2.0})     # `x` by name
     body   = cx.absolute.declare({'scale': sketch}).graph[n('scale')]
-    assert type(body) is Function and body.reads == (v('x'), cx.absolute.place(cx.given.beside(V['y'], 'k')))
+    assert type(body) is FunctionalNode and body.reads == (v('x'), cx.absolute.place(cx.given.beside(V['y'], 'k')))
     ExecutableGraph(cx.absolute.declare({'scale': sketch}).graph)
     assert NoImplementation in [type(f) for f in
                                 violations(RealisedGraph, cx.absolute.declare({'scale': sketch}).graph)]
     written = flat.function(lambda x, k: x * k, 'y', reads={'k': 2.0})
     assert cx.absolute.declare({'scale': written}).graph.nodes == cx.absolute.declare({'scale': sketch}).graph.nodes
     residual = flat.residual(cx.Unimplemented(('u', 'y')), 'u')         # the paired kinds too
-    assert type(residual.function_node()) is Function
+    assert type(residual.function_node()) is FunctionalNode
     with pytest.raises(ValueError, match='one place per parameter'):
         flat.function(cx.Unimplemented(('x',)), 'y', reads={'q': 'x'})
 
@@ -428,7 +428,7 @@ def test_bounds_are_relations_over_parameters():
                                                    'c': ('lo', None)}).condition
     assert o.relations == (cx.Relation(v('lo'), v('a'), cx.Le), cx.Relation(v('a'), v('hi'), cx.Le),
                            cx.Relation(None, v('b'), cx.Le), cx.Relation(v('lo'), v('c'), cx.Le))
-    assert o.parameters == (v('lo'), v('hi')) and o.conditions == (v('f'),)
+    assert o.parameters == (v('lo'), v('hi')) and o.reads_inside == (v('f'),)
     assert flat.satisfy(design={'a': (0, 'hi')}).condition.parameters == (v('hi'),)
 
 
@@ -616,7 +616,7 @@ def test_the_default_closing_binds_a_closure_in_its_own_namespace():
     g   = cx.absolute.declare({'disc1': flat.function(lambda z1, y2: z1 - 0.2 * y2, 'y1')}, disc2,
                       objective, {'opt': cx.absolute.optimise(minimise=v('f'), design=(v('z1'),))}).graph
     out = (Plan(g) + cx.flat.mdf(n('opt'))).graph
-    closures = [p for p in out.problems if p != n('opt')]
+    closures = [p for p in out.enclosers if p != n('opt')]
     assert [p.segments[0] for p in closures] == [purposes.Closure()]
 
 
@@ -632,7 +632,7 @@ def test_an_architecture_takes_its_top_and_defaults_the_rest():
 
 def test_implement_names_its_nodes_with_n():
     op = cx.absolute.implement({N['disc2']: disc2.fn})
-    assert tuple(op.implementations) == (n('disc2'),)
+    assert tuple(op.values) == (n('disc2'),)
 
 
 # ---------------------------------------------------------------- end to end
@@ -714,7 +714,7 @@ def test_the_mdf_absorbs_constraints_declared_where_computed(x64):
     assert cx.Relation(v('g2'), v('g2_max'), cx.Le) in top.relations
     assert v('g2_max') in top.parameters and cx.absolute.node(cx.require(N['margin2'])) not in model.graph
 
-    for p in model.graph.problems:
+    for p in model.graph.enclosers:
         driver = (ConstrainedMinimisation(steps=False) if p == n('opt')
                   else RootFinding(steps=False))
         model += cx.absolute.assign(p, driver)
@@ -1020,7 +1020,7 @@ def test_drive_answers_each_problem_by_the_first_that_accepts_it(x64):
 
     g = cx.absolute.declare({'cosine': flat.fixed_point(jnp.cos, 'u', reads={'x': 'u'})})
     driven = g + cx.flat.drive(Picard(rtol=1e-12, atol=1e-12), newton())
-    assert driven.graph[cx.absolute.node(cx.solve(N['cosine']))].implementation == \
+    assert implementation_of(driven.graph[cx.absolute.node(cx.solve(N['cosine']))]) == \
         Picard(rtol=1e-12, atol=1e-12)
     tree = flat.run(driven, {cx.Start: {'u': 1.0}})
     assert tree['u'] == pytest.approx(0.7390851332, abs=1e-8)

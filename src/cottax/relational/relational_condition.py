@@ -8,6 +8,7 @@ import dataclasses
 from collections.abc import Iterator
 
 from ..core import ConditionalNode, Place, Renaming, Violation, relabelled
+from ..core.maths.definition import attributes_text
 from ..core.frozen import Frozen
 
 
@@ -128,32 +129,30 @@ def check_parameters(node: 'RelationalCondition') -> Iterator[Violation]:
 
 class RelationalCondition[V: Place](ConditionalNode[V]):
     '''A condition node: relations and objectives over places, the unknowns it determines and
-    the parameters it holds fixed. Every other term is a condition. Supports addition.'''
+    the parameters it holds fixed. Every other term is read inside. Supports addition.'''
 
     relations  : tuple[Relation[V], ...]
     objectives : tuple[Objective[V], ...]
-    unknowns   : tuple[V, ...]
-    parameters : tuple[V, ...]
-    '''Terms read and held fixed while the unknowns move: a bound, a limit. Read, not a
-    condition, so a proof asks them off the problem's cycle.'''
+    owns_inside   : tuple[V, ...]
+    '''The unknowns it determines; none for a requirement.'''
+    reads_outside : tuple[V, ...]
+    '''The parameters: terms read and held fixed while the unknowns move: a bound, a
+    limit. Read outside, so a proof asks them off the problem's cycle.'''
+    owns_outside = ()
 
     checks = (check_relates_something, check_parameters)
 
     @property
-    def conditions(self) -> tuple[V, ...]:
+    def unknowns(self) -> tuple[V, ...]:    return self.owns_inside
+    @property
+    def parameters(self) -> tuple[V, ...]:  return self.reads_outside
+    @property
+    def reads_inside(self) -> tuple[V, ...]:
         '''The objectives, then every relation's terms that are neither unknowns nor
         parameters, in order.'''
         return tuple(o.place for o in self.objectives) + tuple(
             t for r in self.relations for t in r.terms
             if t not in self.unknowns and t not in self.parameters)
-    @property
-    def reads(self) -> tuple[V, ...]:
-        '''The conditions, then the parameters.'''
-        return self.conditions + self.parameters
-
-    @property
-    def owns(self) -> tuple[V, ...]:
-        return self.unknowns
 
     def __add__(self, other: 'RelationalCondition[V]') -> 'RelationalCondition[V]':
         '''The join: relations, objectives and unknowns concatenated, this side first; the
@@ -166,10 +165,6 @@ class RelationalCondition[V: Place](ConditionalNode[V]):
                                    self.parameters + tuple(p for p in other.parameters
                                                            if p not in self.parameters))
 
-    def determined(self, unknowns: tuple[V, ...]) -> 'RelationalCondition[V]':
-        '''Same ConditionalNode but determined by the unknowns.'''
-        return dataclasses.replace(self, unknowns=unknowns)
-
     def relabel(self, renaming: Renaming[V]) -> 'RelationalCondition[V]':
         '''
         Relabels the relations, objectives, unknowns and parameters.
@@ -178,8 +173,8 @@ class RelationalCondition[V: Place](ConditionalNode[V]):
             self,
             relations  = tuple(r.relabel(renaming) for r in self.relations),
             objectives = tuple(o.relabel(renaming) for o in self.objectives),
-            unknowns   = relabelled(self.unknowns,   renaming),
-            parameters = relabelled(self.parameters, renaming),
+            owns_inside   = relabelled(self.owns_inside,   renaming),
+            reads_outside = relabelled(self.reads_outside, renaming),
         )
 
     def __repr__(self) -> str:
@@ -189,7 +184,7 @@ class RelationalCondition[V: Place](ConditionalNode[V]):
                 if self.unknowns else ' (requirement)')
         fixed = (' fixing ' + ', '.join(str(p) for p in self.parameters)
                  if self.parameters else '')
-        return f'{type(self).__name__}({stated}{over}{fixed})'
+        return f'{type(self).__name__}({stated}{over}{fixed}){attributes_text(self)}'
 
 
 # ----------------------------------------------------------------- violation finals

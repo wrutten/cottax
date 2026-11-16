@@ -1,13 +1,17 @@
 '''
 Ops on `Redefine`: what a node reads and owns renamed (`Rewire`, `Rename`, `Cut`), a
-definition replaced (`Replace`), and what it determines (`Determine`, `Undetermine`).
+definition replaced (`Replace`), what a condition node owns inside set (`SetOwnsInside`), and
+what a node carries set and removed (`SetAttribute`, `RemoveAttribute`).
 '''
 
 from abc import abstractmethod
+import dataclasses
 from collections.abc import Iterator, Mapping
 
-from ..definition import NodeDefinition, Renaming
-from ...frozen import Violation
+from ..definition import (
+    Attribute, NodeDefinition, Renaming, misfits, with_attributes, without_attribute,
+)
+from ...frozen import AbstractClassVar, OrderedMap, Violation, name_of
 from ..nesting import NestingGraph
 from ..places import Label, Place, PlaceToPlace
 from .primitive import Redefine
@@ -18,9 +22,7 @@ type Relabel[N: Label, V: Place] = Mapping[N, Renaming[V]]
 
 
 def check_renames_places_the_node_has(op: 'Rewire', graph: NestingGraph) -> Iterator[Violation]:
-    '''
-    Cannot rename a place the node does not read or own.
-    '''
+    '''A node only renames places it reads or owns.'''
     for name, m in op.renaming(graph).items():
         node = graph[name]
         has  = set(node.reads) | set(node.owns)
@@ -29,27 +31,27 @@ def check_renames_places_the_node_has(op: 'Rewire', graph: NestingGraph) -> Iter
 
 
 class Rewire[N: Label, V: Place](Redefine[N, V]):
-    """
-    Rename the places a definition reads and owns only.
-    """
+    """Rename places a node reads and owns; nothing else of it changes."""
 
     checks_graph = (check_renames_places_the_node_has,)
 
     @abstractmethod
     def renaming(self, graph: NestingGraph[N, V]) -> Relabel[N, V]:
-        '''Per node, old place -> new. One map: a node reads a place or owns it, never
-        both, so nothing has to say which field a renaming lands in.'''
-        ...
+        '''Per node, old place -> new. One map serves reads and owns: a node never has a
+        place in both.'''
 
     def redefined(self, graph: NestingGraph[N, V]) -> Mapping[N, NodeDefinition[V]]:
         return {name: graph[name].relabel(m)
                 for name, m in self.renaming(graph).items()}
 
 class Replace[N: Label, V: Place](Redefine[N, V]):
-    """One binding given a definition the caller already holds."""
+    """One binding given a definition the caller already holds, attributes and all: who
+    hands over a new definition says what it carries."""
 
     node       : N
     definition : NodeDefinition[V]
+
+    edits_attributes = True
 
     def redefined(self, graph: NestingGraph[N, V]) -> Mapping[N, NodeDefinition[V]]:
         return {self.node: self.definition}
@@ -76,14 +78,14 @@ class Rename[N: Label, V: Place](Rewire[N, V]):
 # ---------------------------------------------------------------- Cutting
 
 def check_readers(op: 'Cut') -> Iterator[Violation]:
-    '''A cut has readers: with none, the copy is a name nothing reads.'''
+    '''A cut has readers; with none, nothing would read the copy.'''
     if not op.readers:
         yield NoReaders(op.var, op.copy)
 
 
 def check_cuts_a_produced_place(op: 'Cut', graph: NestingGraph) -> Iterator[Violation]:
-    '''A boundary input renamed leaves nothing to close the cut against, and a second cut
-    of one variable would put more readers on the first copy.'''
+    '''`var` is produced (a boundary input has nothing to close the cut against), and its
+    copy is not in use (a second cut would add readers to the first copy).'''
     owners = graph.graph.owners
     if op.var not in owners:
         yield NotProduced(op.var)
@@ -92,17 +94,14 @@ def check_cuts_a_produced_place(op: 'Cut', graph: NestingGraph) -> Iterator[Viol
 
 
 def check_readers_read_var(op: 'Cut', graph: NestingGraph) -> Iterator[Violation]:
-    '''Every reader reads `var`. The producer owns it, so renaming there would move the
-    output and leave `var` a boundary input.'''
+    '''Every reader reads `var`. Renaming on the producer would move the output instead.'''
     if off := tuple(r for r in op.readers if r in graph and op.var not in graph[r].reads):
         yield DoesNotRead(op.var, off)
 
 
 class Cut[N: Label, V: Place](Rewire[N, V]):
-    '''
-    Rewire the *reads* of `readers` onto a copy of `var`. The producer and `var` are
-    untouched, so a reader outside `readers` still gets the computed value.
-    '''
+    '''Make `readers` read a copy of `var`. The producer and every other reader are
+    untouched.'''
 
     var     : V
     readers : tuple[N, ...]
@@ -124,87 +123,147 @@ class Cut[N: Label, V: Place](Rewire[N, V]):
         return f'cut({self.var}->{self.copy})'
 
 
-# ---------------------------------------------------------------- the unknowns
+# ---------------------------------------------------------------- what is owned inside
 
-def check_unknowns(op: 'Determine') -> Iterator[Violation]:
-    '''Something is determined, and nothing twice.'''
-    if not op.unknowns:
-        yield NoUnknowns()
-    if len(set(op.unknowns)) != len(op.unknowns):
-        yield UnknownTwice(tuple(op.unknowns))
+def check_owned_once(op: 'SetOwnsInside') -> Iterator[Violation]:
+    """No place is owned inside twice."""
+    if twice := tuple(dict.fromkeys(p for p in op.owns_inside if op.owns_inside.count(p) > 1)):
+        yield OwnedInsideTwice(twice)
 
 
-def check_determines_nothing_yet(op: 'Determine', graph: NestingGraph) -> Iterator[Violation]:
-    '''What a condition node determines is replaced, never added to.'''
-    if unknowns := tuple(graph[op.requirement].unknowns):
-        yield AlreadyDetermined(op.requirement, unknowns)
+def stores_owns_inside(node: object) -> bool:
+    """`node` stores `owns_inside` as a field: what `SetOwnsInside` can set."""
+    return dataclasses.is_dataclass(node) and 'owns_inside' in {
+        f.name for f in dataclasses.fields(node)}
 
 
-def check_determines_something(op: 'Undetermine', graph: NestingGraph) -> Iterator[Violation]:
-    '''The inverse: there is something to drop.'''
-    if not graph[op.problem].unknowns:
-        yield AlreadyUndetermined(op.problem)
+def check_owns_inside_is_stored(op: 'SetOwnsInside', graph: NestingGraph) -> Iterator[Violation]:
+    """The node stores `owns_inside`: one that derives it -- from its states, from the
+    node it wraps -- has no choice to set."""
+    if not stores_owns_inside(node := graph[op.node]):
+        yield OwnsInsideNotAChoice(op.node, type(node).__name__)
 
 
-class Determine[N: Label, V: Place](Redefine[N, V]):
-    '''A requirement, with the unknowns it determines named: `determined`, asked of the
-    node, so what makes an answer right stays the condition node's own business.'''
+class SetOwnsInside[N: Label, V: Place](Redefine[N, V]):
+    """A condition node owns `owns_inside` inside, and nothing else of it changes: with
+    none it is a requirement, with some an encloser. For a kind that stores `owns_inside`
+    as a field."""
 
-    requirement : N
-    unknowns    : tuple[V, ...]
+    node        : N
+    owns_inside : tuple[V, ...]
 
-    checks = (check_unknowns,)
-    checks_graph = (check_determines_nothing_yet,)
-
-    def redefined(self, graph: NestingGraph[N, V]) -> Mapping[N, NodeDefinition[V]]:
-        return {self.requirement: graph[self.requirement].determined(self.unknowns)}
-
-    def __repr__(self) -> str:
-        return f'determine({self.requirement} <- {", ".join(str(u) for u in self.unknowns)})'
-
-
-class Undetermine[N: Label, V: Place](Redefine[N, V]):
-    '''The inverse of `Determine`: the unknowns dropped, the condition node kept.'''
-
-    problem : N
-
-    checks_graph = (check_determines_something,)
+    checks = (check_owned_once,)
+    checks_graph = (check_owns_inside_is_stored,)
 
     def redefined(self, graph: NestingGraph[N, V]) -> Mapping[N, NodeDefinition[V]]:
-        return {self.problem: graph[self.problem].determined(())}
+        return {self.node: dataclasses.replace(graph[self.node], owns_inside=self.owns_inside)}
 
     def __repr__(self) -> str:
-        return f'undetermine({self.problem})'
+        return f'set_owns_inside({self.node} <- {", ".join(str(p) for p in self.owns_inside)})'
+
+
+# ---------------------------------------------------------------- what a node carries
+
+def check_sets_something(op: 'SetAttribute') -> Iterator[Violation]:
+    if not op.values:
+        yield NoAttributeNamed()
+
+
+def check_settable(op: 'SetAttribute', graph: NestingGraph) -> Iterator[Violation]:
+    """No node carries one under that key already, and each can carry what it is given."""
+    for name, value in op.values.items():
+        if op.kind in (node := graph[name]).attributes:
+            yield AttributeAlreadySet(name, op.kind.__name__)
+        yield from misfits(node, {op.kind: value})
+
+
+class SetAttribute[N: Label, V: Place](Redefine[N, V]):
+    """Each named node carries the value given for it under `kind`; nothing else of it
+    changes. An attribute's own op is this with its `kind` named: `Implement`."""
+
+    kind   : AbstractClassVar[type[Attribute]]
+    values : OrderedMap[N, object]
+
+    edits_attributes = True
+
+    checks = (check_sets_something,)
+    checks_graph = (check_settable,)
+
+    def redefined(self, graph: NestingGraph[N, V]) -> Mapping[N, NodeDefinition[V]]:
+        return {name: with_attributes(node := graph[name], OrderedMap({**node.attributes, self.kind: value}))
+                for name, value in self.values.items()}
+
+    def __repr__(self) -> str:
+        return (f'{type(self).__name__.lower()}('
+                + ', '.join(f'{n} <- {name_of(v)}' for n, v in self.values.items()) + ')')
+
+
+def check_removes_something(op: 'RemoveAttribute') -> Iterator[Violation]:
+    if not op.nodes:
+        yield NoAttributeNamed()
+
+
+def check_removable(op: 'RemoveAttribute', graph: NestingGraph) -> Iterator[Violation]:
+    """Each node carries one to take off."""
+    for name in op.nodes:
+        if op.kind not in graph[name].attributes:
+            yield AttributeNotSet(name, op.kind.__name__)
+
+
+class RemoveAttribute[N: Label, V: Place](Redefine[N, V]):
+    """The inverse of `SetAttribute`: what each node carries under `kind` taken off."""
+
+    kind  : AbstractClassVar[type[Attribute]]
+    nodes : tuple[N, ...]
+
+    edits_attributes = True
+
+    checks = (check_removes_something,)
+    checks_graph = (check_removable,)
+
+    def redefined(self, graph: NestingGraph[N, V]) -> Mapping[N, NodeDefinition[V]]:
+        return {name: without_attribute(graph[name], self.kind) for name in self.nodes}
+
+    def __repr__(self) -> str:
+        return f'{type(self).__name__.lower()}({", ".join(map(str, self.nodes))})'
 
 
 # ----------------------------------------------------------------- violation finals
+
+class NoAttributeNamed(Violation):
+    error    = ValueError
+    template = 'names no node, so there is no attribute to set or take off'
+
+class AttributeAlreadySet(Violation):
+    node      : Label
+    attribute : str
+    error    = TypeError
+    template = ('{node!r} already carries a {attribute} -- replacing one with another in silence '
+                'is not an edit; take it off first')
+
+class AttributeNotSet(Violation):
+    node      : Label
+    attribute : str
+    error    = TypeError
+    template = '{node!r} carries no {attribute}, so there is nothing to take off'
+
+class OwnedInsideTwice(Violation):
+    places : tuple[Place, ...]
+    error    = ValueError
+    template = '{places!r} is owned inside twice'
+
+class OwnsInsideNotAChoice(Violation):
+    node : Label
+    kind : str
+    error    = TypeError
+    template = ('{node!r} is a {kind}, and what it owns inside is not a choice -- if it '
+                'carries a driver, `Undrive` it first')
 
 class NoReaders(Violation):
     var  : Place
     copy : Place
     error    = ValueError
     template = 'cut({var}): no readers, so {copy!r} would be a name nothing reads'
-
-class NoUnknowns(Violation):
-    error    = ValueError
-    template = 'determine(): no unknowns -- a condition node that determines nothing is what it already is'
-
-class UnknownTwice(Violation):
-    unknowns : tuple[Place, ...]
-    error    = ValueError
-    template = 'determine(): {unknowns!r} names an unknown twice'
-
-class AlreadyDetermined(Violation):
-    requirement : Label
-    unknowns    : tuple[Place, ...]
-    error    = TypeError
-    template = ('{requirement!r} already determines {unknowns!r} -- `Undetermine` it first, so '
-                'the earlier choice is dropped deliberately rather than silently replaced')
-
-class AlreadyUndetermined(Violation):
-    problem : Label
-    error    = TypeError
-    template = '{problem!r} already determines nothing, so there is nothing to take off'
 
 class NotRenamed(Violation):
     node   : Label

@@ -15,8 +15,8 @@ from cottax.assemblies.jax import flat
 from cottax.consumers.visualization.interface_types import Around
 from cottax.consumers.visualization.latex import LatexFormatter
 from cottax.consumers.visualization.latex.xdsm import LATIN_MODERN
-from cottax.core import Function, Mint
-from cottax.core.realisation import ImplementedFunction
+from cottax.core import FunctionalNode, Mint
+from cottax.core.realisation import implemented
 
 
 # ---------------------------------------------------------------- the base
@@ -308,7 +308,7 @@ def multiply(a, b):
 def function_node(body, reads, owns):
     '''A function node's definition (not a graph operation): `body` over `reads`, owning
     `owns`.'''
-    return ImplementedFunction(Function(tuple(reads), tuple(owns)), body)
+    return implemented(FunctionalNode(tuple(reads), tuple(owns)), body)
 
 
 # ---------------------------------------------------------------- derivatives through a nested solve

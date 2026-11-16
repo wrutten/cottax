@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from ...core import ConditionalNode, Label, NestingGraph, Place, Renaming, Violation, relabelled
+from ...core.maths.definition import attributes_text
 from ...core.frozen import AbstractVar
 from .driver import DriverContract, PerUnknown, Role
 
@@ -20,6 +21,10 @@ def check_pairing(driven: 'Driven') -> Iterator[Violation]:
     if isinstance(driven.condition, DrivenNode):
         yield DrivenTwice(driven.condition, driver)
         return
+    if driven.condition.attributes:
+        # until the driver is the condition's own fields: an attribute here is inside the
+        # wrapper, where nothing asking the graph's node for it would find it
+        yield ConditionCarries(driven.condition, tuple(k.__name__ for k in driven.condition.attributes))
     if not driven.contract.accepts(driven.condition):
         accepts = driven.contract.accepts
         yield NotAccepted(driver, driven.condition, getattr(accepts, '__name__', repr(accepts)))
@@ -58,8 +63,7 @@ class DrivenNode[V: Place](ConditionalNode[V]):
 
     @abstractmethod
     def undriven(self) -> ConditionalNode[V]:
-        '''The condition node with the driver taken off: what `Undrive` edits. A final
-        that cannot have it taken off refuses here.'''
+        '''The condition node with the driver taken off: what `Undrive` edits.'''
 
     def data_of(self, role: type) -> tuple[V, ...] | None:
         '''The places its driver takes `role` at, the slot read off the node: one per unknown
@@ -89,19 +93,13 @@ class Driven[V: Place](DrivenNode[V]):
     checks = (check_pairing, check_slots)
 
     @property
-    def unknowns(self) -> tuple[V, ...]:    return self.condition.unknowns
+    def owns_inside(self) -> tuple[V, ...]:    return self.condition.owns_inside
     @property
-    def conditions(self) -> tuple[V, ...]:  return self.condition.conditions
+    def reads_inside(self) -> tuple[V, ...]:   return self.condition.reads_inside
     @property
-    def reads(self) -> tuple[V, ...]:       return self.condition.reads + _joined(self.data)
+    def reads_outside(self) -> tuple[V, ...]:  return self.condition.reads_outside + _joined(self.data)
     @property
-    def owns(self) -> tuple[V, ...]:        return self.condition.owns + _joined(self.reports)
-
-    def determined(self, unknowns: tuple[V, ...]) -> 'Driven[V]':
-        '''Refused: an algorithm was chosen for the node as it stands, and its
-        per-unknown slots are laid out against the unknowns it had.'''
-        raise DeterminedWhileDriven(type(self.contract).__name__, self.unknowns,
-                                    tuple(unknowns)).raised
+    def owns_outside(self) -> tuple[V, ...]:   return self.condition.owns_outside + _joined(self.reports)
 
     def undriven(self) -> ConditionalNode[V]:
         return self.condition
@@ -118,8 +116,8 @@ class Driven[V: Place](DrivenNode[V]):
         joined = self.condition + other.condition
         def slot(role: type, mine: tuple[V, ...], theirs: tuple[V, ...]) -> tuple[V, ...]:
             if issubclass(role, PerUnknown):
-                at = dict(zip(self.unknowns, mine)) | dict(zip(other.unknowns, theirs))
-                return tuple(at[u] for u in joined.unknowns)
+                at = dict(zip(self.owns_inside, mine)) | dict(zip(other.owns_inside, theirs))
+                return tuple(at[u] for u in joined.owns_inside)
             if mine != theirs:
                 raise RoleAtTwoPlaces(role.__name__, mine, theirs).raised
             return mine
@@ -133,7 +131,7 @@ class Driven[V: Place](DrivenNode[V]):
                       tuple(relabelled(slot, renaming) for slot in self.reports))
 
     def __repr__(self) -> str:
-        return f'Driven({self.condition!r} by {type(self.contract).__name__})'
+        return f'Driven({self.condition!r} by {type(self.contract).__name__}){attributes_text(self)}'
 
 
 def _joined[V](slots: tuple[tuple[V, ...], ...]) -> tuple[V, ...]:
@@ -153,23 +151,13 @@ def role_slots[N: Label, V: Place](graph: NestingGraph[N, V], role: type[Role]
     its problem, and for a per-unknown role the unknown it pairs with (`None` for a
     per-problem one). A place two problems take is there twice.'''
     return tuple((place, name, unknown)
-                 for name in graph.problems if is_driven(node := graph[name])
+                 for name in graph.enclosers if is_driven(node := graph[name])
                  and (places := node.places_of(role)) is not None
-                 for place, unknown in (zip(places, node.unknowns) if issubclass(role, PerUnknown)
+                 for place, unknown in (zip(places, node.owns_inside) if issubclass(role, PerUnknown)
                                         else ((places[0], None),)))
 
 
 # ----------------------------------------------------------------- violation finals
-
-class DeterminedWhileDriven(Violation):
-    driver   : str
-    unknowns : tuple
-    asked    : tuple
-    error    = TypeError
-    template = ('a {driver} answers this problem over {unknowns!r}, so it cannot be made to '
-                'determine {asked!r} -- the algorithm was chosen for the problem as it '
-                'stands; `Undrive` it first')
-
 
 class DrivenTwice(Violation):
     problem : object
@@ -177,6 +165,14 @@ class DrivenTwice(Violation):
     error    = TypeError
     template = ('{problem!r} already carries an algorithm, so a {driver} cannot answer it '
                 'too -- `Undrive` it first')
+
+
+class ConditionCarries(Violation):
+    problem    : object
+    attributes : tuple
+    error    = TypeError
+    template = ('{problem!r} carries {attributes}, and a driver goes on a bare condition node: '
+                'what the driven node carries is set on it, once the driver is on')
 
 
 class NotAccepted(Violation):

@@ -19,19 +19,20 @@ from cottax.core.maths.graph import (
     OwnAroundOwner, OwnInsideOwner, OwnedTwice, OwnerInsideRead, ReadInsideOwner,
 )
 from cottax.core import (
-    AbstractGraph, NestingGraph, Combine, ConditionalNode, Cut, Determine, FunctionalNode,
-    Rename, Undetermine, refusals,
-    Violation, NodeDefinition, Insert, Redefine, Delete,
+    AbstractGraph, NestingGraph, Combine, ConditionalNode, Cut, FunctionalNode,
+    Rename, Replace, SetOwnsInside, refusals,
+    Attribute, RemoveAttribute, SetAttribute, with_attributes,
+    Violation, NodeDefinition, Insert, Delete,
     violations, comparables_in, first, prefixes,
     answer_for_labels, answer_for_places, GraphWithValues,
 )
 from cottax.core.maths.plan.primitive import (
-    Rebinding, check_delete_keeps_nesting_whole, check_nesting, check_unnesting, in_full,
+    Nest, Unnest, check_delete_keeps_nesting_whole, check_nesting, check_unnesting,
 )
 from cottax.core.refusal_kinds import DoesNotRead
 from cottax.core.maths.executable import ExecutableGraph
 from cottax.core.frozen import Answer, OrderedMap, answers
-from cottax.core.maths.nesting import (BoxOwnsNothing, NotAProblem, Unbound, check_blocks_own_something,
+from cottax.core.maths.nesting import (BoxOwnsNothing, NotAnEncloser, Unbound, check_blocks_own_something,
                                       check_blocks_partition)
 from cottax.pytree.path import VarPath
 from cottax.core import Mint, Minting
@@ -86,44 +87,62 @@ def places(names):
     return tuple(Word(n) for n in names)
 
 
-class Declared(FunctionalNode):
-    '''A computation with nothing to call.'''
-    reads : tuple = ()
-    owns  : tuple = ()
-    def relabel(self, renaming): return self
+Declared = FunctionalNode
+'''A computation with nothing to call.'''
 
 
 class States(ConditionalNode):
     '''A bare condition node: two bare tuples, and no relation anywhere. **The whole of
-    `ConditionalNode`** -- what it holds against and what it determines -- so every rule
+    `ConditionalNode`** -- what it reads and owns inside -- so every rule
     in the layer runs on a condition node that was never written as `lhs op rhs`.'''
-    conditions : tuple = ()
-    unknowns   : tuple = ()
-    reads      = property(lambda self: self.conditions)
-    owns       = property(lambda self: self.unknowns)
+    reads_inside  : tuple = ()
+    owns_inside   : tuple = ()
+    reads_outside = ()
+    owns_outside  = ()
     def relabel(self, renaming): return self
-    def determined(self, unknowns): return States(self.conditions, unknowns)
     def __add__(self, other):
         '''The whole of what `Combine` asks of a kind -- no relation anywhere.'''
         if not isinstance(other, States):
             return NotImplemented
-        return States(self.conditions + other.conditions, self.unknowns + other.unknowns)
+        return States(self.reads_inside + other.reads_inside, self.owns_inside + other.owns_inside)
 
 
 class Driven(ConditionalNode):
     '''A problem with an algorithm, as the abstract sees it: a condition node
-    reading more than its conditions and owning more than its unknowns. No driver
+    reading and owning outside as well as inside. No driver
     anywhere -- what one *is* is `problem/`'s, and the rules never ask.'''
     problem : States
     data    : tuple = ()
     reports : tuple = ()
-    conditions = property(lambda self: self.problem.conditions)
-    unknowns   = property(lambda self: self.problem.unknowns)
-    reads      = property(lambda self: self.problem.reads + tuple(v for vs in self.data for v in vs))
-    owns       = property(lambda self: self.problem.owns + tuple(v for vs in self.reports for v in vs))
+    reads_inside  = property(lambda self: self.problem.reads_inside)
+    owns_inside   = property(lambda self: self.problem.owns_inside)
+    reads_outside = property(lambda self: tuple(v for vs in self.data for v in vs))
+    owns_outside  = property(lambda self: tuple(v for vs in self.reports for v in vs))
     def relabel(self, renaming): return self
-    def determined(self, unknowns): return Driven(self.problem.determined(unknowns),
-                                                  self.data, self.reports)
+
+
+class Note(Attribute):
+    '''An attribute with no opinion on the node carrying it: a title, a tag.'''
+
+
+class Shaped(Attribute):
+    '''An attribute written for a node's shape: it fits a node reading one place.'''
+    @classmethod
+    def fits(cls, value, node): return len(node.reads) == 1
+
+
+class SetNote(SetAttribute):        kind = Note
+class DropNote(RemoveAttribute):    kind = Note
+class SetShaped(SetAttribute):      kind = Shaped
+
+
+class Forgets(NodeDefinition):
+    '''A kind whose `relabel` builds a fresh node, and so says nothing of what it carried.'''
+    reads : tuple = ()
+    owns  : tuple = ()
+    def relabel(self, renaming):
+        return Forgets(tuple(renaming.get(v, v) for v in self.reads),
+                       tuple(renaming.get(v, v) for v in self.owns))
 
 
 def body(reads, owns):          return declared(reads, owns)   # a body is no edge: the abstract sees a function
@@ -140,12 +159,10 @@ def G(definitions, within=None):
 
 
 def proof(graph, op, define):
-    '''What an op's delta checks and proofs say of `graph` with `define` bound, as data.'''
-    r     = Rebinding(frozenset(), define)
-    after = graph.graph._carried(definitions=graph.definitions | define)
-    return [v for check in op.per_level('checks_delta') for v in check(graph, r)] + \
-           [v for proof in dict.fromkeys(op.covers.values()) if proof is not in_full
-              for v in proof(graph.graph, after, r)]
+    '''Why `op` of `define` does not apply to `graph`, and the rules of the bindings that
+    would result, as data.'''
+    return list(refusals(op(OrderedMap(define)), graph)) + \
+           list(violations(AbstractGraph, OrderedMap(graph.definitions | define)))
 
 
 def on_insert(new, standing=None):
@@ -229,8 +246,8 @@ def test_a_fold_is_generic_in_the_place_and_in_the_kind():
 
     fresh = Combine(Word('both'), (a, b), States).apply(g)
     assert tuple(fresh.definitions) == (t, Word('both'))          # bound at the end
-    assert fresh[Word('both')].conditions == places(['y', 'z'])
-    assert fresh[Word('both')].unknowns == places(['x', 'w'])
+    assert fresh[Word('both')].reads_inside == places(['y', 'z'])
+    assert fresh[Word('both')].owns_inside == places(['x', 'w'])
 
     kept = Combine(a, (a, b), States).apply(g)
     assert tuple(kept.definitions) == (a, t)                      # `a` where it was
@@ -263,8 +280,10 @@ def test_a_fold_is_asked_of_its_result_and_never_of_a_step_toward_it():
     direct = G({P: defs[P] + defs[R], h: defs[h], Q: defs[Q], k: defs[k], f: defs[f]}, {Q: P})
     assert folded == direct
     assert tuple(folded.definitions) == (P, h, Q, k, f)
+    alone = Delete((R,)).apply(g)                               # the step alone is carried ...
+    assert dict(alone.within) == {Q: P}
     with pytest.raises(ValueError, match='not on one cycle'):
-        Delete((R,)).apply(g)                                   # the step alone is refused
+        ExecutableGraph(alone)                                  # ... and refused as executable
 
 
 def test_an_ownership_violation_names_each_owner():
@@ -281,11 +300,11 @@ def test_an_ownership_violation_names_each_owner():
 
 
 def test_a_nesting_with_a_bad_end_is_listed_not_raised():
-    """`check_nesting_ends_on_one_cycle` skips a pair another rule refuses."""
+    """A pair with a bad end is the one rule's that names it."""
     a, t = Word('a'), Word('t')
     graph = AbstractGraph(OrderedMap({a: states([], ['x']), t: toy([], ['y'])}))
     assert [type(v) for v in violations(NestingGraph, graph, OrderedMap({Word('zz'): a}))] == [Unbound]
-    assert [type(v) for v in violations(NestingGraph, graph, OrderedMap({t: a}))] == [NotAProblem]
+    assert [type(v) for v in violations(NestingGraph, graph, OrderedMap({t: a}))] == [NotAnEncloser]
 
 
 def test_a_contraction_refuses_a_block_owning_nothing():
@@ -316,6 +335,64 @@ def test_a_graph_is_answered_for_the_class_of_its_places_or_of_its_names():
         answer_for_places(Said, G({Word('a'): Toy((), (Word('x'),))}))
 
 
+def test_what_a_condition_node_owns_inside_is_set_where_it_is_stored():
+    """`SetOwnsInside` writes the field on any kind that stores it -- no relation anywhere
+    -- and both ways: some makes an encloser, none a requirement again."""
+    a, b = Word('a'), Word('b')
+    g = G({a: states(['y'], []), b: toy(['u'], ['y'])})
+    set_ = SetOwnsInside(a, places(['u'])).apply(g)
+    assert set_[a] == states(['y'], ['u']) and set_.enclosers == (a,)
+    assert SetOwnsInside(a, ()).apply(set_)[a] == states(['y'], [])
+    assert repr(SetOwnsInside(a, places(['u']))) == 'set_owns_inside(a <- u)'
+
+
+# ---------------------------------------------------------------- what a node carries
+
+def test_an_attribute_is_set_and_taken_off_and_is_in_equality():
+    a = Word('a')
+    g = G({a: toy([], ['x'])})
+    noted = SetNote(OrderedMap({a: 'n'})).apply(g)
+    assert noted[a].attributes == OrderedMap({Note: 'n'})           # the key, and the value as given
+    assert noted[a] != g[a] and noted != g                  # a node is what it carries too
+    assert DropNote((a,)).apply(noted) == g
+    assert [type(v).__name__ for v in refusals(SetNote(OrderedMap({a: 'm'})), noted)] \
+        == ['AttributeAlreadySet']
+    assert [type(v).__name__ for v in refusals(DropNote((a,)), g)] == ['AttributeNotSet']
+
+
+def test_what_a_node_carries_is_carried_through_an_edit_by_the_op_and_not_the_kind():
+    """`Forgets.relabel` builds a fresh node and says nothing of attributes: `Redefine` puts
+    back what the node carried. `Replace` hands a definition over, attributes and all."""
+    a = Word('a')
+    g = G({a: with_attributes(Forgets(places(['p']), places(['q'])), OrderedMap({Note: 'n'}))})
+    assert g[a].relabel({Word('p'): Word('r')}).attributes == OrderedMap()      # the kind forgets
+    renamed = Rename(a, ((Word('p'), Word('r')),)).apply(g)
+    assert renamed[a].reads == places(['r']) and renamed[a].attributes == g[a].attributes
+    replaced = Replace(a, toy(['p', 's'], ['q'])).apply(g)
+    assert replaced[a].reads == places(['p', 's']) and replaced[a].attributes == OrderedMap()
+
+
+def test_an_attribute_says_which_nodes_it_fits():
+    """Core cannot read an attribute, so it asks its key, of the node: one that does not
+    fit is never built, by hand or by an op -- which says so as data, before the graph is
+    touched -- and a key with no opinion fits every node."""
+    a, b = Word('a'), Word('b')
+    g = G({a: toy(['p'], ['q']), b: toy(['p', 's'], ['t'])})
+    with pytest.raises(TypeError, match='Shaped does not fit'):
+        with_attributes(g[b], OrderedMap({Shaped: 1}))
+    assert [(type(v).__name__, v.attribute) for v in refusals(SetShaped(OrderedMap({b: 1})), g)] \
+        == [('AttributeDoesNotFit', 'Shaped')]
+    shaped = SetShaped(OrderedMap({a: 1})).apply(g)
+    assert Rename(a, ((Word('p'), Word('r')),)).apply(shaped)[a].attributes == OrderedMap({Shaped: 1})
+    assert SetNote(OrderedMap({b: 'n'})).apply(g)[b].attributes == OrderedMap({Note: 'n'})
+
+
+def test_a_join_folds_no_attributes():
+    a, b = Word('a'), Word('b')
+    g = G({a: with_attributes(states(['y'], ['u']), OrderedMap({Note: 'n'})), b: states(['z'], ['v'])})
+    assert [type(v).__name__ for v in refusals(Combine(a, (a, b), States), g)] == ['CarriesAttributes']
+
+
 def test_every_case_a_rule_can_name_has_wording():
     """
     A missing template is a `KeyError` raised at the moment something else went wrong,
@@ -331,8 +408,8 @@ def test_every_case_a_rule_can_name_has_wording():
 
     a, b, t = Word('a'), Word('b'), Word('t')
     seen(proof(G({a: toy([], ['x'])}), Insert, {a: toy([], ['y'])}))       # name taken
-    seen(proof(G({a: toy([], ['x'])}), Redefine, {b: toy([], ['y'])}))    # not bound
-    seen(check_unnesting(G({a: states([], ['x'])}), a))                       # not nested
+    seen(refusals(Delete((b,)), G({a: toy([], ['x'])})))                  # not bound
+    seen(check_unnesting(Unnest(a), G({a: states([], ['x'])})))                     # not nested
     seen(proof(G({}), Insert, {a: toy([], ['s']), b: toy([], ['s'])}))
     seen(proof(G({}), Insert, {a: toy([], ['s']), b: toy([], ['s.u'])}))
     seen(proof(G({a: toy([], ['s'])}), Insert,   {b: toy([], ['s.u'])}))
@@ -348,38 +425,44 @@ def test_every_case_a_rule_can_name_has_wording():
     seen(violations(Toy, places(['s']), places(['s.u'])))
     seen(violations(Declared, places([]), places([])))                       # owns nothing
     seen(violations(States, (), ()))                                        # an empty condition node
+    seen(violations(Driven, states(['r'], ['u']), (places(['r']),)))        # r read inside and outside
     seen(violations(Insert, OrderedMap({})))                                   # nothing inserted
     seen(violations(Delete, ()))                                            # nothing deleted
     seen(violations(Cut, Word('x'), (), lambda w: w))                       # a copy nothing reads
-    seen(violations(Determine, a, ()))                                      # determines nothing
-    seen(violations(Determine, a, places(['u', 'u'])))                      # an unknown twice
+    seen(violations(SetOwnsInside, a, places(['u', 'u'])))                  # a place owned inside twice
     seen(violations(Combine, a, (b,), States))                              # fewer than two
     seen(violations(Combine, a, (b, b), States))                            # a node twice
     seen(violations(Combine, a, (a, b), Toy))                               # a kind with no `+`
+    seen(violations(SetNote, OrderedMap()))                                            # names no node
+    seen(violations(Toy, places(['p', 'r']), places(['q']), attributes=OrderedMap({Shaped: 1})))   # does not fit
 
     # `checks_graph`: what an op needs of the graph, asked before it computes anything --
     # and asked for, which is what `refusals` is, so nothing here is built by hand.
     hat  = lambda w: Word(w.segments + ('hat',))
     onto = lambda w: Word('y')
     g = G({a: states(['y'], ['u']), b: toy([], ['x'])})
-    seen(refusals(Determine(a, places(['v'])), g))                      # already determined
-    seen(refusals(Undetermine(a), G({a: states(['y'], [])})))           # nothing to drop
+    seen(refusals(SetOwnsInside(a, ()), G({a: driven(['y'], ['u'])})))  # a driven node derives it: not a choice
     seen(refusals(Rename(b, ((Word('nope'), Word('q')),)), g))          # a place it has not got
     seen(refusals(Cut(Word('free'), (b,), hat), g))                     # nothing produces it
     seen(refusals(Cut(Word('x'), (a,), onto), g))                       # the minted name is taken
     seen(refusals(Cut(Word('x'), (b,), hat), g))                        # `b` produces it, reads nothing
     seen(refusals(Combine(a, (a, b), States), g))                       # `b` is a `Toy`
+    noted = G({a: with_attributes(states(['y'], ['u']), OrderedMap({Note: 'n'})), b: states(['z'], ['v']),
+               t: with_attributes(toy(['p'], ['q']), OrderedMap({Shaped: 1}))})
+    seen(refusals(SetNote(OrderedMap({a: 'm'})), noted))                # carries one under that key already
+    seen(refusals(DropNote((b,)), noted))                               # carries none to take off
+    seen(refusals(Combine(a, (a, b), States), noted))                   # what two nodes carry has no join
 
     cyc = {a: states(['y'], ['x']), b: states(['x'], ['y']), t: toy(['x'], ['w'])}
     with pytest.raises(KeyError, match='not a node of this graph'):     # `check_nesting_ends_bound`, at construction
         G({a: states([], ['x'])}, {a: b})
-    seen(check_delete_keeps_nesting_whole(G(cyc, {a: b}), Rebinding(frozenset({a}), {})))  # one end lost
-    seen(check_nesting(G({a: states([], ['x'])}), (a, b)))                    # unbound
-    seen(check_nesting(G(cyc), (a, t)))                                       # t not a problem
-    seen(check_nesting(G(cyc, {a: b}), (a, b)))                               # already
-    seen(check_nesting(G(cyc), (a, a)))                                       # inside itself
-    seen(check_nesting(G(cyc, {b: a}), (a, b)))                               # loop
-    seen(violations(NestingGraph, AbstractGraph(OrderedMap({a: states([], ['x']), b: states([], ['y'])})), OrderedMap({a: b})))          # unreachable
+    seen(check_delete_keeps_nesting_whole(Delete((a,)), G(cyc, {a: b})))  # one end lost
+    seen(violations(NestingGraph, G({a: states([], ['x'])}).graph, OrderedMap({a: b})))   # unbound
+    seen(violations(NestingGraph, G(cyc).graph, OrderedMap({a: t})))            # t not a problem
+    seen(check_nesting(Nest(a, b), G(cyc, {a: b})))                             # already
+    seen(violations(NestingGraph, G(cyc).graph, OrderedMap({a: a})))            # inside itself
+    seen(check_nesting(Nest(a, b), G(cyc, {b: a})))                             # loop
+    seen(violations(ExecutableGraph, G({a: states([], ['x']), b: states([], ['y'])}, {a: b})))   # unreachable
     seen(check_blocks_own_something(G({a: states(['x'], []), b: states(['y'], [])}), ((a, b),)))  # a box owning nothing
     seen(check_blocks_partition(G({a: toy([], ['x']), b: toy([], ['y'])}), ((a,), (a, b))))  # a short block, a node twice
     S = G
