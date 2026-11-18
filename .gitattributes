@@ -7,5 +7,6 @@
 # The filter is inert until `nbstripout --install` is run once in this clone
 # (pip install nbstripout first); git silently skips an undefined filter.
 *.ipynb filter=nbstripout
+docs/source/examples/distributed_architectures_i.ipynb -filter
 *.ipynb diff=ipynb
 

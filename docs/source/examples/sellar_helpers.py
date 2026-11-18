@@ -2,8 +2,8 @@
 Sellar (Sellar, Batill & Renaud 1996) and what its architectures share: the base every plan
 starts from, the names the plans write, the bodies of the functions they insert, a
 finite-difference Jacobian for a system subproblem over nested constrained solves, and running
-a plan against the literature's optimum. `sellar_plans.py` holds the plans; `sellar.ipynb` runs
-them.
+a plan against the literature's optimum. `distributed_architectures.py` holds the plans;
+`distributed_architectures_i.ipynb` runs them.
 '''
 
 import dataclasses

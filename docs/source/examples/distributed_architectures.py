@@ -2,7 +2,7 @@
 The MDO architectures of Martins & Lambe (2013) that solve the original problem, each as a plan
 on Sellar: a function of the declared base (`sellar_helpers.sellar()`), returning it with the
 architecture's ops applied, cottax's own and nothing else. `RUNS` says how each is run and how
-close it must come to the literature's optimum; `sellar.ipynb` runs them.
+close it must come to the literature's optimum; `distributed_architectures_i.ipynb` runs them.
 
 SAND and IDF are cottax's presets under the Jacobi rule, MDF under its default, Gauss-Seidel.
 Every other plan is written out against Martins & Lambe's equations and figure. MDOIS is no
